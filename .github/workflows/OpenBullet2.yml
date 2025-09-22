@@ -1,4 +1,4 @@
-name: OpenBullet2 - Use Pre-installed Docker
+name: OpenBullet2 with Valid Docker Image
 
 on:
   workflow_dispatch
@@ -9,33 +9,67 @@ jobs:
     timeout-minutes: 360
 
     steps:
-    - name: Check existing Docker
+    - name: Try different Docker images
       run: |
-        echo "🔍 Checking pre-installed Docker..."
-        docker --version || echo "Docker not in PATH"
-        docker ps || echo "Docker not running"
-        echo "✅ Environment check completed"
+        # تست چندین image مختلف
+        IMAGES=(
+          "linuxserver/openbullet2:latest"
+          "jlesage/openbullet2:latest"
+          "jrottenberg/openbullet2:latest"
+        )
+        
+        for IMAGE in "${IMAGES[@]}"; do
+          echo "🔍 Trying image: $IMAGE"
+          if docker pull "$IMAGE" 2>/dev/null; then
+            echo "✅ Image found: $IMAGE"
+            echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+            break
+          else
+            echo "❌ Image not available: $IMAGE"
+          fi
+        done
+        
+        if [ -z "$IMAGE" ]; then
+          echo "❌ No Docker image found, using binary method"
+          echo "METHOD=binary" >> $GITHUB_ENV
+        else
+          echo "METHOD=docker" >> $GITHUB_ENV
+        fi
 
-    - name: Pull OpenBullet2 image
-      run: |
-        # استفاده از Docker بدون نصب
-        docker pull mrinjamul/openbullet2:latest
-        echo "✅ Image pulled successfully"
-
-    - name: Run OpenBullet2 container
+    - name: Run with Docker if available
+      if: env.METHOD == 'docker'
       run: |
         docker run -d \
           --name openbullet2 \
           -p 8080:8080 \
-          mrinjamul/openbullet2:latest
+          $IMAGE
         
         sleep 40
         
         if docker ps | grep -q openbullet2; then
-          echo "✅ Container is running"
-          docker logs openbullet2 | head -5
+          echo "✅ Docker container running"
         else
-          echo "❌ Container failed to start"
+          echo "❌ Docker failed, switching to binary"
+          echo "METHOD=binary" >> $GITHUB_ENV
+        fi
+
+    - name: Run with binary method
+      if: env.METHOD == 'binary'
+      run: |
+        # دانلود binary از releases رسمی
+        wget -O OpenBullet2 "https://github.com/openbullet/OpenBullet2/releases/download/2.0.0/OpenBullet2"
+        chmod +x OpenBullet2
+        
+        # اجرای OpenBullet2
+        ./OpenBullet2 --urls "http://0.0.0.0:8080" > ob2.log 2>&1 &
+        echo "OB2_PID=$!" >> $GITHUB_ENV
+        sleep 40
+        
+        if ps -p $OB2_PID > /dev/null; then
+          echo "✅ Binary method successful"
+        else
+          echo "❌ Binary method failed"
+          cat ob2.log
           exit 1
         fi
 
@@ -46,7 +80,7 @@ jobs:
         chmod +x ngrok
         ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
         ./ngrok http 8080 > ngrok.log 2>&1 &
-        sleep 15
+        sleep 20
 
     - name: Get public URL
       run: |
@@ -62,6 +96,7 @@ jobs:
         echo "🌐 Access: $URL"
         echo "👤 Username: admin"
         echo "🔐 Password: admin"
+        echo "⚡ Method: $METHOD"
         echo "========================================"
 
     - name: Keep alive
