@@ -1,0 +1,50 @@
+name: Advanced OB2 Automation
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # هر 6 ساعت
+  workflow_dispatch
+
+jobs:
+  automated-ob2:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        config:
+          - 'https://example.com/config1.opk'
+          - 'https://example.com/config2.opk'
+          - 'https://example.com/config3.opk'
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y dotnet-sdk-6.0 xvfb
+
+    - name: Download and run OB2
+      run: |
+        # دانلود کانفیگ
+        wget -O config.opk "${{ matrix.config }}"
+        
+        # ایجاد وردلیست تست
+        cat > wordlist.txt << EOF
+test1
+test2
+test3
+username1:password1
+username2:password2
+EOF
+
+        # اجرای OB2
+        git clone https://github.com/openbullet/OpenBullet2.git
+        cd OpenBullet2
+        dotnet build
+        
+        xvfb-run -a dotnet run --project OpenBullet2.ConsoleRunner
+
+    - name: Process results
+      run: |
+        echo "Processing results for ${{ matrix.config }}"
