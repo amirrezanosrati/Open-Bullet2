@@ -1,42 +1,101 @@
-name: OB2 Simplest Solution
+name: OpenBullet2 Auto Path Finder
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2-simple:
+  run-ob2:
     runs-on: ubuntu-latest
+    timeout-minutes: 240
 
     steps:
-    - name: Run OB2 with Docker Compose
+    - name: Install .NET 6.0
       run: |
         sudo apt-get update
-        sudo apt-get install -y docker.io
-        sudo systemctl start docker
+        sudo apt-get install -y dotnet-sdk-6.0 wget
+        dotnet --version
+
+    - name: Clone OB2 repository
+      run: |
+        git clone https://github.com/openbullet/OpenBullet2.git
+        cd OpenBullet2
+        echo "📁 Repository structure:"
+        find . -type f -name "*.csproj" -o -name "*.sln" | head -10
+
+    - name: Find the correct project path
+      run: |
+        cd OpenBullet2
+        # پیدا کردن فایل csproj
+        CSPROJ_FILE=$(find . -name "*.csproj" | grep -v "test" | head -1)
+        if [ -z "$CSPROJ_FILE" ]; then
+          echo "❌ No .csproj file found"
+          echo "Available files:"
+          find . -type f | head -20
+          exit 1
+        fi
+        echo "✅ Found project file: $CSPROJ_FILE"
+        echo "CSPROJ_FILE=$CSPROJ_FILE" >> $GITHUB_ENV
         
-        # استفاده از docker run ساده
-        docker run -d \
-          --name ob2 \
-          -p 8080:8080 \
-          mrinjamul/openbullet2:latest
-        
+        # پیدا کردن دایرکتوری پروژه
+        PROJECT_DIR=$(dirname "$CSPROJ_FILE")
+        echo "📁 Project directory: $PROJECT_DIR"
+        echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+
+    - name: Build the project
+      run: |
+        cd OpenBullet2
+        echo "🔨 Building project: $CSPROJ_FILE"
+        dotnet build "$CSPROJ_FILE" --configuration Release
+
+    - name: Run OB2 from correct path
+      run: |
+        cd OpenBullet2
+        echo "🚀 Running from: $PROJECT_DIR"
+        cd "$PROJECT_DIR"
+        dotnet run --configuration Release --urls="http://0.0.0.0:8080" > run.log 2>&1 &
+        echo "OB2_PID=$!" >> $GITHUB_ENV
         sleep 30
-        docker ps
+
+    - name: Check if OB2 is running
+      run: |
+        echo "🔍 Checking OB2 status..."
+        if ps -p $OB2_PID > /dev/null; then
+          echo "✅ OB2 process is running (PID: $OB2_PID)"
+          echo "📋 Application log:"
+          cat OpenBullet2/"$PROJECT_DIR"/run.log | tail -20
+        else
+          echo "❌ OB2 process not found"
+          echo "📋 Full error log:"
+          cat OpenBullet2/"$PROJECT_DIR"/run.log
+          exit 1
+        fi
 
     - name: Setup Ngrok
       run: |
         wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
         tar -xzf ngrok-v3-stable-linux-amd64.tgz
+        chmod +x ngrok
         ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        ./ngrok http 8080 &
+        ./ngrok http 8080 > ngrok.log 2>&1 &
         sleep 10
 
-    - name: Show URL
+    - name: Get public URL
       run: |
-        URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        echo "🌐 Your OpenBullet2: $URL"
-        echo "🔑 admin/admin"
+        sleep 10
+        PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
+        echo "🌐 Public URL: $PUBLIC_URL"
+        echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
 
-    - name: Wait
+    - name: Display success message
+      run: |
+        echo "========================================"
+        echo "🎉 OPENBULLET2 IS RUNNING!"
+        echo "========================================"
+        echo "🌐 URL: $PUBLIC_URL"
+        echo "👤 Username: admin"
+        echo "🔐 Password: admin"
+        echo "========================================"
+
+    - name: Keep alive
       run: |
         sleep 14400
