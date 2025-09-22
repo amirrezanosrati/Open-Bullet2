@@ -1,50 +1,31 @@
-name: OpenBullet2 Correct Download
+name: OB2 with Docker
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2:
+  run-ob2-docker:
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
     steps:
-    - name: Download OB2 Linux binary
+    - name: Run OB2 in Docker
       run: |
-        # دریافت لینک دانلود صحیح از GitHub Releases
-        DOWNLOAD_URL=$(curl -s https://api.github.com/repos/openbullet/OpenBullet2/releases/latest | grep "browser_download_url" | grep -i linux | cut -d'"' -f4)
-        echo "Download URL: $DOWNLOAD_URL"
+        docker run -d \
+          --name openbullet2 \
+          -p 8080:8080 \
+          -e ASPNETCORE_URLS=http://0.0.0.0:8080 \
+          mrinjamul/openbullet2:latest
         
-        # دانلود فایل
-        wget -O OpenBullet2 "$DOWNLOAD_URL"
-        
-        # بررسی نوع فایل
-        file OpenBullet2
-        chmod +x OpenBullet2
-
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libgdiplus \
-          libc6-dev \
-          libx11-dev
-
-    - name: Run OB2
-      run: |
-        mkdir -p ob2-data
-        cd ob2-data
-        # راه اندازی OB2
-        ../OpenBullet2 --urls "http://0.0.0.0:8080" &
-        echo "OB2_PID=$!" >> $GITHUB_ENV
         sleep 30
 
-    - name: Check if OB2 is running
+    - name: Check Docker container
       run: |
-        if ps -p $OB2_PID > /dev/null; then
-          echo "✅ OB2 is running"
+        if docker ps | grep -q openbullet2; then
+          echo "✅ OB2 Docker container is running"
         else
-          echo "❌ OB2 failed to start"
+          echo "❌ OB2 Docker container failed"
+          docker logs openbullet2
           exit 1
         fi
 
@@ -57,17 +38,12 @@ jobs:
         ./ngrok http 8080 > /dev/null 2>&1 &
         sleep 10
 
-    - name: Get public URL
+    - name: Get URL
       run: |
-        sleep 10
-        PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        echo "🌐 Public URL: $PUBLIC_URL"
-        echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
+        URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
+        echo "🌐 OB2 URL: $URL"
+        echo "🔑 admin/admin"
 
-    - name: Keep alive
+    - name: Wait
       run: |
-        echo "✅ OpenBullet2 is running at: $PUBLIC_URL"
-        echo "🔑 Username: admin"
-        echo "🔑 Password: admin"
-        echo "⏰ Will run for 4 hours..."
         sleep 14400
