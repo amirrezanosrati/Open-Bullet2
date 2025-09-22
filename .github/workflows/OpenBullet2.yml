@@ -1,31 +1,48 @@
-name: OB2 with Docker
+name: OB2 from Source
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2-docker:
+  build-ob2:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 300
 
     steps:
-    - name: Run OB2 in Docker
+    - name: Install .NET 6.0
       run: |
-        docker run -d \
-          --name openbullet2 \
-          -p 8080:8080 \
-          -e ASPNETCORE_URLS=http://0.0.0.0:8080 \
-          mrinjamul/openbullet2:latest
-        
+        sudo apt-get update
+        sudo apt-get install -y wget
+        wget https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb
+        sudo dpkg -i packages-microsoft-prod.deb
+        sudo apt-get update
+        sudo apt-get install -y dotnet-sdk-6.0
+
+    - name: Clone OB2 repository
+      run: |
+        git clone https://github.com/openbullet/OpenBullet2.git
+        cd OpenBullet2
+        git submodule update --init --recursive
+
+    - name: Build OB2
+      run: |
+        cd OpenBullet2
+        dotnet publish OpenBullet2 -c Release -o ./publish -r linux-x64 --self-contained true
+
+    - name: Run OB2
+      run: |
+        cd OpenBullet2/publish
+        ./OpenBullet2 --urls "http://0.0.0.0:8080" &
+        echo "OB2_PID=$!" >> $GITHUB_ENV
         sleep 30
 
-    - name: Check Docker container
+    - name: Verify OB2
       run: |
-        if docker ps | grep -q openbullet2; then
-          echo "✅ OB2 Docker container is running"
+        if ps -p $OB2_PID > /dev/null; then
+          echo "✅ OB2 is running"
+          netstat -tuln | grep 8080 || echo "Port check failed but process is running"
         else
-          echo "❌ OB2 Docker container failed"
-          docker logs openbullet2
+          echo "❌ OB2 failed to start"
           exit 1
         fi
 
@@ -36,14 +53,19 @@ jobs:
         chmod +x ngrok
         ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
         ./ngrok http 8080 > /dev/null 2>&1 &
-        sleep 10
+        sleep 15
 
-    - name: Get URL
+    - name: Display info
       run: |
         URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        echo "🌐 OB2 URL: $URL"
-        echo "🔑 admin/admin"
+        echo "========================================"
+        echo "🎉 OPENBULLET2 READY!"
+        echo "========================================"
+        echo "🌐 URL: $URL"
+        echo "🔑 Username: admin"
+        echo "🔑 Password: admin"
+        echo "========================================"
 
-    - name: Wait
+    - name: Keep running
       run: |
         sleep 14400
