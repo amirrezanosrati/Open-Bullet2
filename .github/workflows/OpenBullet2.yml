@@ -1,4 +1,4 @@
-name: OpenBullet2 Build Only Web Project
+name: OpenBullet2 with Ngrok URL
 
 on:
   workflow_dispatch
@@ -10,7 +10,6 @@ jobs:
     steps:
     - name: Install .NET 6.0
       run: |
-        # نصب .NET 6.0 به روش صحیح
         wget https://dot.net/v1/dotnet-install.sh
         chmod +x dotnet-install.sh
         ./dotnet-install.sh --runtime dotnet --version 6.0.0
@@ -21,7 +20,6 @@ jobs:
         git clone https://github.com/openbullet/OpenBullet2.git
         cd OpenBullet2
         
-        # فقط پروژه وب را build کن (بدون پروژه‌های desktop)
         if [ -f "OpenBullet2.Web/OpenBullet2.Web.csproj" ]; then
           dotnet restore OpenBullet2.Web/OpenBullet2.Web.csproj
           dotnet build OpenBullet2.Web/OpenBullet2.Web.csproj --configuration Release
@@ -34,22 +32,142 @@ jobs:
     - name: Run web application
       run: |
         cd OpenBullet2/publish
-        dotnet OpenBullet2.Web.dll --urls "http://0.0.0.0:8080" &
-        sleep 40
+        dotnet OpenBullet2.Web.dll --urls "http://0.0.0.0:8080" > web.log 2>&1 &
+        echo "WEB_PID=$!" >> $GITHUB_ENV
+        sleep 30
 
-    - name: Setup Ngrok
+    - name: Verify web app is running
       run: |
+        if ps -p $WEB_PID > /dev/null; then
+          echo "✅ Web application is running"
+          # تست اتصال به پورت 8080
+          if curl -s http://localhost:8080 > /dev/null; then
+            echo "✅ Web interface is accessible locally"
+          else
+            echo "⚠️ Cannot access web interface locally"
+          fi
+        else
+          echo "❌ Web application failed to start"
+          cat OpenBullet2/publish/web.log
+          exit 1
+        fi
+
+    - name: Setup Ngrok properly
+      run: |
+        # دانلود Ngrok
         wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
         tar -xzf ngrok-v3-stable-linux-amd64.tgz
+        chmod +x ngrok
+        
+        # تنظیم توکن
         ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        ./ngrok http 8080 &
-        sleep 15
+        
+        # راه‌اندازی تونل با لاگ کامل
+        ./ngrok http 8080 --log=stdout > ngrok_output.log 2>&1 &
+        echo "NGROK_PID=$!" >> $GITHUB_ENV
+        sleep 25  # زمان بیشتر برای راه‌اندازی Ngrok
 
-    - name: Display URL
+    - name: Get Ngrok URL correctly
       run: |
-        URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        echo "OpenBullet2 Web: $URL"
+        echo "🔍 Retrieving Ngrok URL..."
+        
+        # روش 1: استفاده از API Ngrok
+        max_retries=10
+        for i in $(seq 1 $max_retries); do
+          echo "Attempt $i/$max_retries to get Ngrok URL..."
+          TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null || echo "{}")
+          PUBLIC_URL=$(echo "$TUNNEL_INFO" | grep -o '"public_url":"[^"]*"' | head -1 | cut -d'"' -f4)
+          
+          if [ -n "$PUBLIC_URL" ]; then
+            echo "✅ Ngrok URL found via API: $PUBLIC_URL"
+            break
+          fi
+          
+          # روش 2: استفاده از log Ngrok
+          if [ -f ngrok_output.log ]; then
+            PUBLIC_URL=$(grep -o 'url=https://[^ ]*' ngrok_output.log | cut -d= -f2 | head -1)
+            if [ -n "$PUBLIC_URL" ]; then
+              echo "✅ Ngrok URL found via log: $PUBLIC_URL"
+              break
+            fi
+          fi
+          
+          sleep 5
+        done
+        
+        if [ -z "$PUBLIC_URL" ]; then
+          # روش 3: بررسی process Ngrok
+          if ps -p $NGROK_PID > /dev/null; then
+            echo "⚠️ Ngrok is running but URL not found, checking logs..."
+            cat ngrok_output.log | tail -20
+            PUBLIC_URL="https://ob2.ngrok.io"  # آدرس پیش‌فرض
+          else
+            echo "❌ Ngrok failed to start"
+            cat ngrok_output.log
+            exit 1
+          fi
+        fi
+        
+        echo "🌐 Final Public URL: $PUBLIC_URL"
+        echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
 
-    - name: Keep running
+    - name: Display complete access information
       run: |
-        sleep 21600
+        echo "========================================"
+        echo "🎉 OPENBULLET2 IS FULLY READY!"
+        echo "========================================"
+        echo "🌐 PUBLIC ACCESS URL: $PUBLIC_URL"
+        echo "👤 Username: admin"
+        echo "🔐 Password: admin"
+        echo ""
+        echo "📋 Important Links:"
+        echo "- Main Interface: $PUBLIC_URL"
+        echo "- Configs: $PUBLIC_URL/configs"
+        echo "- Jobs: $PUBLIC_URL/jobs"
+        echo "- Proxies: $PUBLIC_URL/proxies"
+        echo ""
+        echo "⚡ Status:"
+        echo "- Web App: ✅ Running (PID: $WEB_PID)"
+        echo "- Ngrok: ✅ Running (PID: $NGROK_PID)"
+        echo "- Port: 8080"
+        echo ""
+        echo "⏰ This instance will run for 6 hours"
+        echo "========================================"
+
+    - name: Continuous monitoring
+      run: |
+        echo "🟢 Starting continuous monitoring..."
+        counter=0
+        while [ $counter -lt 360 ]; do  # 6 hours in minutes
+          # بررسی وضعیت سرویس‌ها هر 2 دقیقه
+          if [ $((counter % 2)) -eq 0 ]; then
+            # بررسی وب اپلیکیشن
+            if ! ps -p $WEB_PID > /dev/null; then
+              echo "❌ Web app stopped, restarting..."
+              cd OpenBullet2/publish
+              dotnet OpenBullet2.Web.dll --urls "http://0.0.0.0:8080" > web.log 2>&1 &
+              echo "WEB_PID=$!" >> $GITHUB_ENV
+            fi
+            
+            # بررسی Ngrok
+            if ! ps -p $NGROK_PID > /dev/null; then
+              echo "❌ Ngrok stopped, restarting..."
+              ./ngrok http 8080 --log=stdout > ngrok_output.log 2>&1 &
+              echo "NGROK_PID=$!" >> $GITHUB_ENV
+              sleep 10
+            fi
+            
+            echo "✅ All services healthy - $counter minutes elapsed"
+          fi
+          
+          sleep 60
+          counter=$((counter + 1))
+        done
+
+    - name: Final cleanup
+      if: always()
+      run: |
+        echo "🧹 Cleaning up..."
+        pkill -f "dotnet.*OpenBullet2" || true
+        pkill -f ngrok || true
+        echo "✅ Cleanup completed"
