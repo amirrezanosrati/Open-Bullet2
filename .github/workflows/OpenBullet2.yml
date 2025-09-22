@@ -1,78 +1,71 @@
-name: OB2 Alternative Method
+name: OB2 Docker Guaranteed
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2-alternative:
+  run-ob2-docker:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Install prerequisites
+    - name: Install Docker
       run: |
         sudo apt-get update
-        sudo apt-get install -y dotnet-sdk-6.0 git wget
+        sudo apt-get install -y docker.io
+        sudo systemctl start docker
 
-    - name: Clone and build step by step
+    - name: Run OB2 container
       run: |
-        git clone https://github.com/openbullet/OpenBullet2.git
-        cd OpenBullet2
+        # استفاده از image معتبر
+        docker run -d \
+          --name openbullet2 \
+          -p 8080:8080 \
+          -e ASPNETCORE_URLS=http://0.0.0.0:8080 \
+          mrinjamul/openbullet2:latest
         
-        # بررسی ساختار
-        echo "=== Directory Structure ==="
-        find . -maxdepth 2 -type d | sort
+        # منتظر راه اندازی
+        sleep 30
         
-        echo "=== Project Files ==="
-        find . -name "*.csproj" -o -name "*.sln"
-
-    - name: Build using solution file
-      run: |
-        cd OpenBullet2
-        if [ -f "OpenBullet2.sln" ]; then
-          echo "🔨 Building solution..."
-          dotnet build OpenBullet2.sln --configuration Release -v detailed
+        # بررسی container
+        if docker ps | grep -q openbullet2; then
+          echo "✅ OB2 container is running"
+          docker logs openbullet2 | head -20
         else
-          echo "❌ No solution file found"
+          echo "❌ OB2 container failed"
+          docker logs openbullet2
           exit 1
         fi
 
-    - name: Run from build output
+    - name: Setup Ngrok
       run: |
-        cd OpenBullet2
-        # پیدا کردن خروجی build
-        if [ -d "OpenBullet2/bin/Release/net6.0" ]; then
-          cd OpenBullet2/bin/Release/net6.0
-          dotnet OpenBullet2.dll --urls="http://0.0.0.0:8080" &
-        elif [ -d "bin/Release/net6.0" ]; then
-          cd bin/Release/net6.0
-          dotnet OpenBullet2.dll --urls="http://0.0.0.0:8080" &
-        else
-          echo "❌ Build output not found"
-          exit 1
-        fi
-        
-        echo "OB2_PID=$!" >> $GITHUB_ENV
-        sleep 20
+        wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+        tar -xzf ngrok-v3-stable-linux-amd64.tgz
+        chmod +x ngrok
+        ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+        ./ngrok http 8080 > ngrok.log 2>&1 &
+        sleep 15
 
-    - name: Verify and setup Ngrok
+    - name: Display access information
       run: |
-        if ps -p $OB2_PID > /dev/null; then
-          echo "✅ OB2 is running"
-          
-          # راه اندازی Ngrok
-          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar -xzf ngrok-v3-stable-linux-amd64.tgz
-          ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-          ./ngrok http 8080 &
-          sleep 10
-          
-          URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-          echo "🌐 URL: $URL"
-        else
-          echo "❌ OB2 failed to start"
-          exit 1
-        fi
+        URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
+        echo "========================================"
+        echo "🎉 OPENBULLET2 READY!"
+        echo "========================================"
+        echo "🌐 Access URL: $URL"
+        echo "👤 Username: admin"
+        echo "🔐 Password: admin"
+        echo "⏰ Will run for 4 hours"
+        echo "========================================"
 
-    - name: Wait
+    - name: Keep container running
       run: |
-        sleep 14400
+        # مانیتورینگ container
+        counter=0
+        while [ $counter -lt 240 ]; do
+          if ! docker ps | grep -q openbullet2; then
+            echo "❌ Container stopped, restarting..."
+            docker start openbullet2
+          fi
+          sleep 60
+          counter=$((counter + 1))
+        done
