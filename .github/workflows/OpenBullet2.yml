@@ -1,251 +1,74 @@
-name: OpenBullet2 Runner
+name: Simple OpenBullet2 Runner
 
 on:
-  workflow_dispatch:
-    inputs:
-      config_url:
-        description: 'URL فایل کانفیگ OB2'
-        required: true
-        default: 'https://example.com/config.opk'
-      wordlist_url:
-        description: 'URL فایل وردلیست'
-        required: true
-        default: 'https://example.com/wordlist.txt'
-      proxies_url:
-        description: 'URL فایل پروکسی'
-        required: false
-        default: ''
-      mode:
-        description: 'حالت اجرا'
-        required: true
-        default: 'checker'
-        type: choice
-        options:
-        - 'checker'
-        - 'debug'
-        - 'mass'
-
-env:
-  CONFIG_URL: ${{ github.event.inputs.config_url }}
-  WORDLIST_URL: ${{ github.event.inputs.wordlist_url }}
-  PROXIES_URL: ${{ github.event.inputs.proxies_url }}
-  RUN_MODE: ${{ github.event.inputs.mode }}
+  workflow_dispatch
 
 jobs:
-  run-openbullet2:
+  run-ob2:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Install .NET SDK
+    - name: Install .NET
       run: |
+        sudo apt-get update
+        sudo apt-get install -y wget
         wget https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
         sudo dpkg -i packages-microsoft-prod.deb
         sudo apt-get update
         sudo apt-get install -y dotnet-sdk-6.0
 
-    - name: Install dependencies for headless mode
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          xvfb libx11-dev libxext-dev libxrandr-dev \
-          libxinerama-dev libxcursor-dev libxi-dev \
-          libgl1-mesa-dev libgdiplus
-
-    - name: Clone OpenBullet2
+    - name: Download OB2 source
       run: |
         git clone https://github.com/openbullet/OpenBullet2.git
         cd OpenBullet2
-        git submodule update --init --recursive
+        dotnet restore
 
-    - name: Build OpenBullet2
+    - name: Build OB2
       run: |
         cd OpenBullet2
-        dotnet build --configuration Release
+        dotnet build OpenBullet2.csproj --configuration Release
 
-    - name: Download resources
+    - name: Start OB2 server
       run: |
-        mkdir -p resources
-        # دانلود کانفیگ
-        wget -O resources/config.opk "$CONFIG_URL" || echo "Failed to download config"
-        
-        # دانلود وردلیست
-        wget -O resources/wordlist.txt "$WORDLIST_URL" || echo "Failed to download wordlist"
-        
-        # دانلود پروکسی (اگر وجود دارد)
-        if [ -n "$PROXIES_URL" ] && [ "$PROXIES_URL" != "" ]; then
-          wget -O resources/proxies.txt "$PROXIES_URL" || echo "Failed to download proxies"
-        fi
+        cd OpenBullet2
+        dotnet run --project OpenBullet2.csproj --urls="http://0.0.0.0:5000" &
+        echo "OB2_PID=$!" >> $GITHUB_ENV
+        sleep 30
 
-    - name: Create runner script
+    - name: Check if OB2 is running
       run: |
-        cat > run_ob2.sh << 'EOF'
-#!/bin/bash
-set -e
-
-echo "Starting OpenBullet2 in headless mode..."
-
-# ایجاد دایرکتوری‌های لازم
-mkdir -p /tmp/ob2/{configs,data,logs}
-
-# کپی منابع
-cp resources/* /tmp/ob2/configs/ 2>/dev/null || true
-
-# ایجاد فایل تنظیمات
-cat > /tmp/ob2/settings.json << 'SETTINGS'
-{
-  "GeneralSettings": {
-    "MaxJobs": 10,
-    "ProxyMode": "On",
-    "ConcurrentProxies": 5
-  },
-  "SecuritySettings": {
-    "AntiAFK": true,
-    "MaxCPUTemp": 80
-  }
-}
-SETTINGS
-
-# اجرای OpenBullet2 با Xvfb (بدون نیاز به GUI)
-cd OpenBullet2/OpenBullet2
-
-# ایجاد فایل کانفیگ runner
-cat > RunnerConfig.json << 'RUNNER'
-{
-  "ConfigFile": "/tmp/ob2/configs/config.opk",
-  "WordlistFile": "/tmp/ob2/configs/wordlist.txt",
-  "ProxiesFile": "/tmp/ob2/configs/proxies.txt",
-  "OutputFile": "/tmp/ob2/results.txt",
-  "Mode": "$RUN_MODE"
-}
-RUNNER
-
-# جایگزینی متغیرها
-sed -i "s/\$RUN_MODE/$RUN_MODE/g" RunnerConfig.json
-
-echo "Starting OpenBullet2..."
-xvfb-run -a dotnet run --project OpenBullet2.ConsoleRunner --configuration Release
-EOF
-
-        chmod +x run_ob2.sh
-
-    - name: Create console runner
-      run: |
-        # ایجاد یک runner ساده برای OB2
-        cat > OpenBullet2/OpenBullet2.ConsoleRunner/Program.cs << 'CSHARP'
-using System;
-using System.IO;
-using System.Threading.Tasks;
-using OpenBullet2.Core.Services;
-using OpenBullet2.Core.Models.Jobs;
-using OpenBullet2.Core.Models.Settings;
-
-namespace OpenBullet2.ConsoleRunner
-{
-    class Program
-    {
-        static async Task Main(string[] args)
-        {
-            try
-            {
-                Console.WriteLine("🚀 OpenBullet2 Console Runner Started");
-                
-                // راه‌اندازی سرویس‌های لازم
-                var settingsService = new OpenBulletSettingsService();
-                var jobManager = new JobManagerService();
-                
-                // بارگیری تنظیمات
-                await settingsService.Initialize();
-                
-                // ایجاد job
-                var jobOptions = new MultiRunJobOptions
-                {
-                    Config = new Config
-                    {
-                        FileName = "/tmp/ob2/configs/config.opk"
-                    },
-                    Wordlist = new Wordlist
-                    {
-                        FileName = "/tmp/ob2/configs/wordlist.txt"
-                    },
-                    Proxies = new Proxies
-                    {
-                        FileName = "/tmp/ob2/configs/proxies.txt"
-                    }
-                };
-                
-                var job = jobManager.CreateJob(jobOptions) as MultiRunJob;
-                
-                // شروع job
-                job.Start();
-                Console.WriteLine("✅ Job started successfully");
-                
-                // منتظر ماندن برای اتمام
-                while (job.Status != JobStatus.Idle)
-                {
-                    Console.WriteLine($"Progress: {job.Progress}% - Hits: {job.Data.Hits} - Bad: {job.Data.Bads}");
-                    await Task.Delay(5000);
-                }
-                
-                Console.WriteLine("🎯 Job completed!");
-                Console.WriteLine($"Total Hits: {job.Data.Hits}");
-                Console.WriteLine($"Total Bads: {job.Data.Bads}");
-                
-                // ذخیره نتایج
-                File.WriteAllText("/tmp/ob2/results.txt", 
-                    $"Hits: {job.Data.Hits}\nBads: {job.Data.Bads}\nTotal: {job.Data.Total}");
-                    
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Error: {ex.Message}");
-                Environment.Exit(1);
-            }
-        }
-    }
-}
-CSHARP
-
-    - name: Run OpenBullet2
-      run: |
-        # اجرای اسکریپت اصلی
-        ./run_ob2.sh
-
-    - name: Collect results
-      run: |
-        echo "📊 جمع‌آوری نتایج..."
-        
-        if [ -f /tmp/ob2/results.txt ]; then
-          echo "✅ نتایج پیدا شد:"
-          cat /tmp/ob2/results.txt
-          
-          # آپلود نتایج
-          mkdir -p results
-          cp /tmp/ob2/results.txt results/
-          cp /tmp/ob2/logs/*.log results/ 2>/dev/null || true
+        if ps -p $OB2_PID > /dev/null; then
+          echo "✅ OpenBullet2 is running"
         else
-          echo "❌ فایل نتایج پیدا نشد"
+          echo "❌ OpenBullet2 failed to start"
+          exit 1
         fi
 
-    - name: Upload results
-      uses: actions/upload-artifact@v4
-      with:
-        name: openbullet2-results
-        path: results/
-        retention-days: 1
-
-    - name: Display summary
+    - name: Setup Ngrok
       run: |
-        echo "=========================================="
-        echo "🎯 OpenBullet2 Execution Complete"
-        echo "=========================================="
-        echo "Mode: $RUN_MODE"
-        echo "Config: $CONFIG_URL"
-        echo "Wordlist: $WORDLIST_URL"
-        if [ -n "$PROXIES_URL" ]; then
-          echo "Proxies: $PROXIES_URL"
+        wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+        tar -xzf ngrok-v3-stable-linux-amd64.tgz
+        chmod +x ngrok
+        ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+        ./ngrok http 5000 > /dev/null 2>&1 &
+        sleep 10
+
+    - name: Get public URL
+      run: |
+        sleep 10
+        PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
+        if [ -z "$PUBLIC_URL" ]; then
+          PUBLIC_URL="https://example.ngrok.io"
         fi
-        echo "=========================================="
+        echo "🌐 Public URL: $PUBLIC_URL"
+        echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
+
+    - name: Keep alive
+      run: |
+        echo "✅ OpenBullet2 is running at: $PUBLIC_URL"
+        echo "🔑 Default password: admin"
+        echo "⏰ Will run for 6 hours..."
+        
+        # نگه داشتن سرویس فعال
+        sleep 21600
