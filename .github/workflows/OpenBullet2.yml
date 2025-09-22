@@ -1,48 +1,41 @@
-name: OB2 Pre-built Binary
+name: OpenBullet2 - Use Pre-installed Docker
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2-binary:
+  run-ob2:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-    - name: Download OpenBullet2 binary
+    - name: Check existing Docker
       run: |
-        # دانلود binary از GitHub Releases
-        wget -O OpenBullet2 "https://github.com/openbullet/OpenBullet2/releases/latest/download/OpenBullet2"
-        chmod +x OpenBullet2
-        file OpenBullet2
-        echo "✅ Binary downloaded and made executable"
+        echo "🔍 Checking pre-installed Docker..."
+        docker --version || echo "Docker not in PATH"
+        docker ps || echo "Docker not running"
+        echo "✅ Environment check completed"
 
-    - name: Install runtime dependencies
+    - name: Pull OpenBullet2 image
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libc6-dev \
-          libgdiplus \
-          libx11-dev \
-          ca-certificates
-        
-        echo "✅ Runtime dependencies installed"
+        # استفاده از Docker بدون نصب
+        docker pull mrinjamul/openbullet2:latest
+        echo "✅ Image pulled successfully"
 
-    - name: Run OpenBullet2
+    - name: Run OpenBullet2 container
       run: |
-        mkdir -p ob2-data
-        cd ob2-data
-        ../OpenBullet2 --urls "http://0.0.0.0:8080" > ob2.log 2>&1 &
-        echo "OB2_PID=$!" >> $GITHUB_ENV
-        sleep 30
+        docker run -d \
+          --name openbullet2 \
+          -p 8080:8080 \
+          mrinjamul/openbullet2:latest
         
-        # بررسی اجرا
-        if ps -p $OB2_PID > /dev/null; then
-          echo "✅ OpenBullet2 is running"
-          cat ob2.log | head -10
+        sleep 40
+        
+        if docker ps | grep -q openbullet2; then
+          echo "✅ Container is running"
+          docker logs openbullet2 | head -5
         else
-          echo "❌ Failed to start"
-          cat ob2.log
+          echo "❌ Container failed to start"
           exit 1
         fi
 
@@ -55,12 +48,22 @@ jobs:
         ./ngrok http 8080 > ngrok.log 2>&1 &
         sleep 15
 
-    - name: Display URL
+    - name: Get public URL
       run: |
         URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
         echo "🌐 URL: $URL"
-        echo "🔑 admin/admin"
+        echo "URL=$URL" >> $GITHUB_ENV
+
+    - name: Display info
+      run: |
+        echo "========================================"
+        echo "🎉 OPENBULLET2 READY!"
+        echo "========================================"
+        echo "🌐 Access: $URL"
+        echo "👤 Username: admin"
+        echo "🔐 Password: admin"
+        echo "========================================"
 
     - name: Keep alive
       run: |
-        sleep 21600  # 6 hours
+        sleep 21600
