@@ -1,91 +1,42 @@
-name: OB2 Docker - Guaranteed Working
+name: OB2 Simplest Solution
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2-docker:
+  run-ob2-simple:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
 
     steps:
-    - name: Install Docker
+    - name: Run OB2 with Docker Compose
       run: |
         sudo apt-get update
         sudo apt-get install -y docker.io
         sudo systemctl start docker
-        docker --version
-
-    - name: Pull OpenBullet2 image
-      run: |
-        docker pull mrinjamul/openbullet2:latest
-        echo "✅ Docker image pulled successfully"
-
-    - name: Run OB2 container
-      run: |
+        
+        # استفاده از docker run ساده
         docker run -d \
-          --name openbullet2 \
+          --name ob2 \
           -p 8080:8080 \
           mrinjamul/openbullet2:latest
         
         sleep 30
-        
-        # بررسی container
-        if docker ps | grep -q openbullet2; then
-          echo "✅ Container is running"
-          echo "📋 Container logs:"
-          docker logs openbullet2 | head -10
-        else
-          echo "❌ Container failed to start"
-          docker logs openbullet2
-          exit 1
-        fi
+        docker ps
 
-    - name: Setup Ngrok tunnel
+    - name: Setup Ngrok
       run: |
         wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
         tar -xzf ngrok-v3-stable-linux-amd64.tgz
-        chmod +x ngrok
         ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        ./ngrok http 8080 > ngrok.log 2>&1 &
-        sleep 15
+        ./ngrok http 8080 &
+        sleep 10
 
-    - name: Get access URL
+    - name: Show URL
       run: |
-        sleep 15
-        PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        if [ -z "$PUBLIC_URL" ]; then
-          # اگر API کار نکرد، از log استفاده کن
-          PUBLIC_URL=$(grep -o 'url=https://[^ ]*' ngrok.log | cut -d= -f2 | head -1)
-        fi
-        echo "🌐 Public URL: $PUBLIC_URL"
-        echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
+        URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
+        echo "🌐 Your OpenBullet2: $URL"
+        echo "🔑 admin/admin"
 
-    - name: Display access information
+    - name: Wait
       run: |
-        echo "========================================"
-        echo "🎉 OPENBULLET2 READY!"
-        echo "========================================"
-        echo "🌐 Access URL: $PUBLIC_URL"
-        echo "👤 Username: admin" 
-        echo "🔐 Password: admin"
-        echo "⏰ Will run for 4 hours"
-        echo "========================================"
-        echo "💡 Open the URL in your browser and login"
-
-    - name: Monitor and keep alive
-      run: |
-        counter=0
-        while [ $counter -lt 240 ]; do
-          # بررسی سلامت container هر 5 دقیقه
-          if [ $((counter % 5)) -eq 0 ]; then
-            if docker ps | grep -q openbullet2; then
-              echo "✅ Container healthy - $counter minutes elapsed"
-            else
-              echo "❌ Container stopped, restarting..."
-              docker start openbullet2
-            fi
-          fi
-          sleep 60
-          counter=$((counter + 1))
-        done
+        sleep 14400
