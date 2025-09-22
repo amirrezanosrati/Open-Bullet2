@@ -1,10 +1,10 @@
-name: OpenBullet2 with Debugging
+name: OpenBullet2 Auto Path Finder
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2-debug:
+  run-ob2:
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
@@ -12,87 +12,62 @@ jobs:
     - name: Install .NET 6.0
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget
-        wget https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb
-        sudo dpkg -i packages-microsoft-prod.deb
-        sudo apt-get update
-        sudo apt-get install -y dotnet-sdk-6.0
-        echo "✅ .NET installed"
+        sudo apt-get install -y dotnet-sdk-6.0 wget
+        dotnet --version
 
     - name: Clone OB2 repository
       run: |
         git clone https://github.com/openbullet/OpenBullet2.git
         cd OpenBullet2
-        echo "📁 Repository cloned"
-        ls -la
+        echo "📁 Repository structure:"
+        find . -type f -name "*.csproj" -o -name "*.sln" | head -10
 
-    - name: Check project structure
+    - name: Find the correct project path
       run: |
         cd OpenBullet2
-        echo "🔍 Checking project structure..."
-        find . -name "*.csproj" | head -5
-        find . -name "*.sln" | head -5
-        echo "📋 Files in root:"
-        ls -la
-
-    - name: Try to build and run with error handling
-      run: |
-        cd OpenBullet2
-        echo "🔨 Attempting to build..."
-        
-        # سعی در پیدا کردن فایل پروژه
-        if [ -f "OpenBullet2.csproj" ]; then
-          echo "📄 Found OpenBullet2.csproj"
-          dotnet build OpenBullet2.csproj --configuration Release
-        elif [ -f "OpenBullet2.sln" ]; then
-          echo "📄 Found OpenBullet2.sln"
-          dotnet build OpenBullet2.sln --configuration Release
-        else
-          echo "❌ No project file found. Available files:"
-          ls -la
+        # پیدا کردن فایل csproj
+        CSPROJ_FILE=$(find . -name "*.csproj" | grep -v "test" | head -1)
+        if [ -z "$CSPROJ_FILE" ]; then
+          echo "❌ No .csproj file found"
+          echo "Available files:"
+          find . -type f | head -20
           exit 1
         fi
+        echo "✅ Found project file: $CSPROJ_FILE"
+        echo "CSPROJ_FILE=$CSPROJ_FILE" >> $GITHUB_ENV
+        
+        # پیدا کردن دایرکتوری پروژه
+        PROJECT_DIR=$(dirname "$CSPROJ_FILE")
+        echo "📁 Project directory: $PROJECT_DIR"
+        echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
 
-    - name: Run OB2 with detailed logging
+    - name: Build the project
       run: |
         cd OpenBullet2
-        echo "🚀 Starting OpenBullet2..."
-        
-        # اجرا با لاگ کامل
-        dotnet run --project OpenBullet2.csproj --urls="http://0.0.0.0:8080" > ob2_output.log 2>&1 &
-        echo "OB2_PID=$!" >> $GITHUB_ENV
-        sleep 10
-        
-        # بررسی خروجی
-        echo "📋 OB2 output:"
-        cat ob2_output.log | head -50
+        echo "🔨 Building project: $CSPROJ_FILE"
+        dotnet build "$CSPROJ_FILE" --configuration Release
 
-    - name: Check if OB2 is actually running
+    - name: Run OB2 from correct path
+      run: |
+        cd OpenBullet2
+        echo "🚀 Running from: $PROJECT_DIR"
+        cd "$PROJECT_DIR"
+        dotnet run --configuration Release --urls="http://0.0.0.0:8080" > run.log 2>&1 &
+        echo "OB2_PID=$!" >> $GITHUB_ENV
+        sleep 30
+
+    - name: Check if OB2 is running
       run: |
         echo "🔍 Checking OB2 status..."
-        
-        # بررسی process
         if ps -p $OB2_PID > /dev/null; then
           echo "✅ OB2 process is running (PID: $OB2_PID)"
+          echo "📋 Application log:"
+          cat OpenBullet2/"$PROJECT_DIR"/run.log | tail -20
         else
           echo "❌ OB2 process not found"
-          echo "📋 Full output log:"
-          cat OpenBullet2/ob2_output.log
+          echo "📋 Full error log:"
+          cat OpenBullet2/"$PROJECT_DIR"/run.log
           exit 1
-        fi
-        
-        # بررسی پورت
-        if netstat -tuln | grep -q ':8080'; then
-          echo "✅ OB2 is listening on port 8080"
-        else
-          echo "⚠️  OB2 not listening on port 8080, but process is running"
-        fi
-        
-        # تست اتصال
-        if curl -s http://localhost:8080 > /dev/null; then
-          echo "✅ OB2 web interface is accessible"
-        else
-          echo "⚠️  Cannot access web interface, but continuing..."
         fi
 
     - name: Setup Ngrok
@@ -108,25 +83,19 @@ jobs:
       run: |
         sleep 10
         PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        if [ -z "$PUBLIC_URL" ]; then
-          PUBLIC_URL="https://ob2.ngrok.io"
-        fi
         echo "🌐 Public URL: $PUBLIC_URL"
         echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
 
-    - name: Keep service alive
+    - name: Display success message
       run: |
-        echo "🟢 OpenBullet2 is running at: $PUBLIC_URL"
-        echo "🔑 Username: admin"
-        echo "🔑 Password: admin"
-        echo "⏰ Running for 4 hours..."
-        
-        # مانیتورینگ پیوسته
-        counter=0
-        while [ $counter -lt 240 ]; do
-          sleep 60
-          counter=$((counter + 1))
-          if [ $((counter % 10)) -eq 0 ]; then
-            echo "⏱️ Still running... $counter minutes passed"
-          fi
-        done
+        echo "========================================"
+        echo "🎉 OPENBULLET2 IS RUNNING!"
+        echo "========================================"
+        echo "🌐 URL: $PUBLIC_URL"
+        echo "👤 Username: admin"
+        echo "🔐 Password: admin"
+        echo "========================================"
+
+    - name: Keep alive
+      run: |
+        sleep 14400
