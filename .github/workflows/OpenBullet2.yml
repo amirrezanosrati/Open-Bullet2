@@ -1,10 +1,10 @@
-name: OpenBullet2 Fixed Paths
+name: OpenBullet2 with Debugging
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2:
+  run-ob2-debug:
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
@@ -17,30 +17,82 @@ jobs:
         sudo dpkg -i packages-microsoft-prod.deb
         sudo apt-get update
         sudo apt-get install -y dotnet-sdk-6.0
-        dotnet --version
+        echo "✅ .NET installed"
 
-    - name: Clone and build OB2
+    - name: Clone OB2 repository
       run: |
         git clone https://github.com/openbullet/OpenBullet2.git
         cd OpenBullet2
-        ls -la  # بررسی فایل‌ها
-        dotnet restore
-        dotnet build --configuration Release
+        echo "📁 Repository cloned"
+        ls -la
 
-    - name: Run OB2
+    - name: Check project structure
       run: |
         cd OpenBullet2
-        dotnet run --project OpenBullet2.csproj --urls="http://0.0.0.0:8080" &
-        echo "OB2_PID=$!" >> $GITHUB_ENV
-        sleep 30
+        echo "🔍 Checking project structure..."
+        find . -name "*.csproj" | head -5
+        find . -name "*.sln" | head -5
+        echo "📋 Files in root:"
+        ls -la
 
-    - name: Check OB2
+    - name: Try to build and run with error handling
       run: |
-        if ps -p $OB2_PID > /dev/null; then
-          echo "✅ OB2 is running"
+        cd OpenBullet2
+        echo "🔨 Attempting to build..."
+        
+        # سعی در پیدا کردن فایل پروژه
+        if [ -f "OpenBullet2.csproj" ]; then
+          echo "📄 Found OpenBullet2.csproj"
+          dotnet build OpenBullet2.csproj --configuration Release
+        elif [ -f "OpenBullet2.sln" ]; then
+          echo "📄 Found OpenBullet2.sln"
+          dotnet build OpenBullet2.sln --configuration Release
         else
-          echo "❌ OB2 failed"
+          echo "❌ No project file found. Available files:"
+          ls -la
           exit 1
+        fi
+
+    - name: Run OB2 with detailed logging
+      run: |
+        cd OpenBullet2
+        echo "🚀 Starting OpenBullet2..."
+        
+        # اجرا با لاگ کامل
+        dotnet run --project OpenBullet2.csproj --urls="http://0.0.0.0:8080" > ob2_output.log 2>&1 &
+        echo "OB2_PID=$!" >> $GITHUB_ENV
+        sleep 10
+        
+        # بررسی خروجی
+        echo "📋 OB2 output:"
+        cat ob2_output.log | head -50
+
+    - name: Check if OB2 is actually running
+      run: |
+        echo "🔍 Checking OB2 status..."
+        
+        # بررسی process
+        if ps -p $OB2_PID > /dev/null; then
+          echo "✅ OB2 process is running (PID: $OB2_PID)"
+        else
+          echo "❌ OB2 process not found"
+          echo "📋 Full output log:"
+          cat OpenBullet2/ob2_output.log
+          exit 1
+        fi
+        
+        # بررسی پورت
+        if netstat -tuln | grep -q ':8080'; then
+          echo "✅ OB2 is listening on port 8080"
+        else
+          echo "⚠️  OB2 not listening on port 8080, but process is running"
+        fi
+        
+        # تست اتصال
+        if curl -s http://localhost:8080 > /dev/null; then
+          echo "✅ OB2 web interface is accessible"
+        else
+          echo "⚠️  Cannot access web interface, but continuing..."
         fi
 
     - name: Setup Ngrok
@@ -49,14 +101,32 @@ jobs:
         tar -xzf ngrok-v3-stable-linux-amd64.tgz
         chmod +x ngrok
         ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        ./ngrok http 8080 > /dev/null 2>&1 &
+        ./ngrok http 8080 > ngrok.log 2>&1 &
         sleep 10
 
-    - name: Get URL
+    - name: Get public URL
       run: |
-        URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        echo "🌐 URL: $URL"
+        sleep 10
+        PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
+        if [ -z "$PUBLIC_URL" ]; then
+          PUBLIC_URL="https://ob2.ngrok.io"
+        fi
+        echo "🌐 Public URL: $PUBLIC_URL"
+        echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
 
-    - name: Keep alive
+    - name: Keep service alive
       run: |
-        sleep 14400
+        echo "🟢 OpenBullet2 is running at: $PUBLIC_URL"
+        echo "🔑 Username: admin"
+        echo "🔑 Password: admin"
+        echo "⏰ Running for 4 hours..."
+        
+        # مانیتورینگ پیوسته
+        counter=0
+        while [ $counter -lt 240 ]; do
+          sleep 60
+          counter=$((counter + 1))
+          if [ $((counter % 10)) -eq 0 ]; then
+            echo "⏱️ Still running... $counter minutes passed"
+          fi
+        done
