@@ -1,12 +1,12 @@
-name: OB2 from Source
+name: OpenBullet2 Fixed Paths
 
 on:
   workflow_dispatch
 
 jobs:
-  build-ob2:
+  run-ob2:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 240
 
     steps:
     - name: Install .NET 6.0
@@ -17,32 +17,29 @@ jobs:
         sudo dpkg -i packages-microsoft-prod.deb
         sudo apt-get update
         sudo apt-get install -y dotnet-sdk-6.0
+        dotnet --version
 
-    - name: Clone OB2 repository
+    - name: Clone and build OB2
       run: |
         git clone https://github.com/openbullet/OpenBullet2.git
         cd OpenBullet2
-        git submodule update --init --recursive
-
-    - name: Build OB2
-      run: |
-        cd OpenBullet2
-        dotnet publish OpenBullet2 -c Release -o ./publish -r linux-x64 --self-contained true
+        ls -la  # بررسی فایل‌ها
+        dotnet restore
+        dotnet build --configuration Release
 
     - name: Run OB2
       run: |
-        cd OpenBullet2/publish
-        ./OpenBullet2 --urls "http://0.0.0.0:8080" &
+        cd OpenBullet2
+        dotnet run --project OpenBullet2.csproj --urls="http://0.0.0.0:8080" &
         echo "OB2_PID=$!" >> $GITHUB_ENV
         sleep 30
 
-    - name: Verify OB2
+    - name: Check OB2
       run: |
         if ps -p $OB2_PID > /dev/null; then
           echo "✅ OB2 is running"
-          netstat -tuln | grep 8080 || echo "Port check failed but process is running"
         else
-          echo "❌ OB2 failed to start"
+          echo "❌ OB2 failed"
           exit 1
         fi
 
@@ -53,19 +50,13 @@ jobs:
         chmod +x ngrok
         ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
         ./ngrok http 8080 > /dev/null 2>&1 &
-        sleep 15
+        sleep 10
 
-    - name: Display info
+    - name: Get URL
       run: |
         URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        echo "========================================"
-        echo "🎉 OPENBULLET2 READY!"
-        echo "========================================"
         echo "🌐 URL: $URL"
-        echo "🔑 Username: admin"
-        echo "🔑 Password: admin"
-        echo "========================================"
 
-    - name: Keep running
+    - name: Keep alive
       run: |
         sleep 14400
