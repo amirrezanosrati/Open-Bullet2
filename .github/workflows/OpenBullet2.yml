@@ -1,101 +1,91 @@
-name: OpenBullet2 Auto Path Finder
+name: OB2 Docker - Guaranteed Working
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2:
+  run-ob2-docker:
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
     steps:
-    - name: Install .NET 6.0
+    - name: Install Docker
       run: |
         sudo apt-get update
-        sudo apt-get install -y dotnet-sdk-6.0 wget
-        dotnet --version
+        sudo apt-get install -y docker.io
+        sudo systemctl start docker
+        docker --version
 
-    - name: Clone OB2 repository
+    - name: Pull OpenBullet2 image
       run: |
-        git clone https://github.com/openbullet/OpenBullet2.git
-        cd OpenBullet2
-        echo "📁 Repository structure:"
-        find . -type f -name "*.csproj" -o -name "*.sln" | head -10
+        docker pull mrinjamul/openbullet2:latest
+        echo "✅ Docker image pulled successfully"
 
-    - name: Find the correct project path
+    - name: Run OB2 container
       run: |
-        cd OpenBullet2
-        # پیدا کردن فایل csproj
-        CSPROJ_FILE=$(find . -name "*.csproj" | grep -v "test" | head -1)
-        if [ -z "$CSPROJ_FILE" ]; then
-          echo "❌ No .csproj file found"
-          echo "Available files:"
-          find . -type f | head -20
-          exit 1
-        fi
-        echo "✅ Found project file: $CSPROJ_FILE"
-        echo "CSPROJ_FILE=$CSPROJ_FILE" >> $GITHUB_ENV
+        docker run -d \
+          --name openbullet2 \
+          -p 8080:8080 \
+          mrinjamul/openbullet2:latest
         
-        # پیدا کردن دایرکتوری پروژه
-        PROJECT_DIR=$(dirname "$CSPROJ_FILE")
-        echo "📁 Project directory: $PROJECT_DIR"
-        echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
-
-    - name: Build the project
-      run: |
-        cd OpenBullet2
-        echo "🔨 Building project: $CSPROJ_FILE"
-        dotnet build "$CSPROJ_FILE" --configuration Release
-
-    - name: Run OB2 from correct path
-      run: |
-        cd OpenBullet2
-        echo "🚀 Running from: $PROJECT_DIR"
-        cd "$PROJECT_DIR"
-        dotnet run --configuration Release --urls="http://0.0.0.0:8080" > run.log 2>&1 &
-        echo "OB2_PID=$!" >> $GITHUB_ENV
         sleep 30
-
-    - name: Check if OB2 is running
-      run: |
-        echo "🔍 Checking OB2 status..."
-        if ps -p $OB2_PID > /dev/null; then
-          echo "✅ OB2 process is running (PID: $OB2_PID)"
-          echo "📋 Application log:"
-          cat OpenBullet2/"$PROJECT_DIR"/run.log | tail -20
+        
+        # بررسی container
+        if docker ps | grep -q openbullet2; then
+          echo "✅ Container is running"
+          echo "📋 Container logs:"
+          docker logs openbullet2 | head -10
         else
-          echo "❌ OB2 process not found"
-          echo "📋 Full error log:"
-          cat OpenBullet2/"$PROJECT_DIR"/run.log
+          echo "❌ Container failed to start"
+          docker logs openbullet2
           exit 1
         fi
 
-    - name: Setup Ngrok
+    - name: Setup Ngrok tunnel
       run: |
         wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
         tar -xzf ngrok-v3-stable-linux-amd64.tgz
         chmod +x ngrok
         ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
         ./ngrok http 8080 > ngrok.log 2>&1 &
-        sleep 10
+        sleep 15
 
-    - name: Get public URL
+    - name: Get access URL
       run: |
-        sleep 10
+        sleep 15
         PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
+        if [ -z "$PUBLIC_URL" ]; then
+          # اگر API کار نکرد، از log استفاده کن
+          PUBLIC_URL=$(grep -o 'url=https://[^ ]*' ngrok.log | cut -d= -f2 | head -1)
+        fi
         echo "🌐 Public URL: $PUBLIC_URL"
         echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
 
-    - name: Display success message
+    - name: Display access information
       run: |
         echo "========================================"
-        echo "🎉 OPENBULLET2 IS RUNNING!"
+        echo "🎉 OPENBULLET2 READY!"
         echo "========================================"
-        echo "🌐 URL: $PUBLIC_URL"
-        echo "👤 Username: admin"
+        echo "🌐 Access URL: $PUBLIC_URL"
+        echo "👤 Username: admin" 
         echo "🔐 Password: admin"
+        echo "⏰ Will run for 4 hours"
         echo "========================================"
+        echo "💡 Open the URL in your browser and login"
 
-    - name: Keep alive
+    - name: Monitor and keep alive
       run: |
-        sleep 14400
+        counter=0
+        while [ $counter -lt 240 ]; do
+          # بررسی سلامت container هر 5 دقیقه
+          if [ $((counter % 5)) -eq 0 ]; then
+            if docker ps | grep -q openbullet2; then
+              echo "✅ Container healthy - $counter minutes elapsed"
+            else
+              echo "❌ Container stopped, restarting..."
+              docker start openbullet2
+            fi
+          fi
+          sleep 60
+          counter=$((counter + 1))
+        done
