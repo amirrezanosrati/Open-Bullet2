@@ -50,6 +50,7 @@ jobs:
           Start-Sleep -Seconds 15
 
       - name: Start ngrok tunnel
+        id: ngrok
         run: |
           if (-not $env:NGROK_TOKEN) {
             throw "NGROK_TOKEN secret not set."
@@ -66,7 +67,17 @@ jobs:
           $publicUrl = $tunnelsJson.tunnels[0].public_url
           Write-Host "Public URL: $publicUrl"
           echo "NGROK_URL=$publicUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          echo "::set-output name=url::$publicUrl"
 
-      - name: Summary
+      - name: Show Public URL
         run: |
-          Write-Host "OpenBullet2 Web Client is available at: $env:NGROK_URL"
+          Write-Host "====================================="
+          Write-Host "  OpenBullet2 Web Client ngrok URL: "
+          Write-Host "  $env:NGROK_URL"
+          Write-Host "====================================="
+
+      - name: Add URL to Summary
+        run: |
+          echo "## 🌐 OpenBullet2 Web Client URL" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "**$env:NGROK_URL**" >> $env:GITHUB_STEP_SUMMARY
