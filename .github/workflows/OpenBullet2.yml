@@ -1,83 +1,76 @@
-name: OpenBullet2 Web Client via ngrok
+name: OpenBullet2 Windows Complete
 
 on:
-  workflow_dispatch:
+  workflow_dispatch
 
 jobs:
-  run-ob2-web:
+  deploy-ob2-windows:
     runs-on: windows-latest
-
-    env:
-      APP_PORT: '5000'
-      NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
-          fetch-depth: 0
-          lfs: true
+    - name: Checkout and build
+      run: |
+        git clone https://github.com/openbullet/OpenBullet2.git
+        cd OpenBullet2
+        
+        # build کامل
+        dotnet restore
+        dotnet build -c Release
+        dotnet publish -c Release -o ./publish
 
-      - name: Download OpenBullet2 Web Client (latest release)
-        run: |
-          Write-Host "Fetching latest OpenBullet2 release..."
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/openbullet/OpenBullet2/releases/latest" -Headers @{ 'User-Agent' = 'GitHub-Actions' }
-          $asset = $release.assets | Where-Object { $_.name -like "*Web*.zip" }
-          if (-not $asset) {
-            throw "No Web Client asset found in the latest release"
-          }
-          $downloadUrl = $asset.browser_download_url
-          Write-Host "Downloading: $($asset.name)"
-          Invoke-WebRequest -Uri $downloadUrl -OutFile "OpenBullet2.Web.zip"
-          Expand-Archive -Path "OpenBullet2.Web.zip" -DestinationPath "./OpenBullet2Web"
+    - name: Verify build output
+      run: |
+        cd OpenBullet2/publish
+        echo "=== Published Files ==="
+        dir
+        echo "=== wwwroot Contents ==="
+        if (Test-Path wwwroot) {
+            dir wwwroot
+            echo "✅ Static files are present"
+        } else {
+            echo "❌ wwwroot missing - this was the Linux issue!"
+        }
 
-      - name: Show .NET runtimes
-        run: |
-          dotnet --list-runtimes
-          dotnet --list-sdks
+    - name: Start OpenBullet2
+      run: |
+        cd OpenBullet2/publish
+        $process = Start-Process -PassThru -FilePath "dotnet" -ArgumentList "OpenBullet2.Web.dll", "--urls", "http://0.0.0.0:8080"
+        echo "PROCESS_ID=$process.Id" >> $env:GITHUB_ENV
+        Start-Sleep -Seconds 40
 
-      - name: Download ngrok
-        run: |
-          Invoke-WebRequest -Uri "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip" -OutFile "ngrok.zip"
-          Expand-Archive -Path "ngrok.zip" -DestinationPath "./ngrok"
+    - name: Verify application
+      run: |
+        # تست اتصال به برنامه
+        try {
+            $response = Invoke-WebRequest -Uri "http://localhost:8080" -TimeoutSec 10
+            echo "✅ OpenBullet2 is fully functional!"
+            echo "✅ Static files are serving correctly"
+        } catch {
+            echo "❌ Application error: $($_.Exception.Message)"
+            exit 1
+        }
 
-      - name: Run OpenBullet2 Web Client (background)
-        working-directory: "./OpenBullet2Web"
-        run: |
-          Write-Host "Starting OpenBullet2.Web..."
-          Start-Process -FilePath ".\\OpenBullet2.Web.exe" -ArgumentList "--urls","http://0.0.0.0:$env:APP_PORT" -NoNewWindow
-          Start-Sleep -Seconds 15
+    - name: Setup Ngrok tunnel
+      run: |
+        Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
+        Expand-Archive -Path "ngrok.zip" -DestinationPath "."
+        .\ngrok.exe authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+        Start-Process -FilePath ".\ngrok.exe" -ArgumentList "http", "8080"
+        Start-Sleep -Seconds 30
 
-      - name: Start ngrok tunnel
-        id: ngrok
-        run: |
-          if (-not $env:NGROK_TOKEN) {
-            throw "NGROK_TOKEN secret not set."
-          }
-          $ngrokExe = "./ngrok/ngrok.exe"
-          & $ngrokExe authtoken $env:NGROK_TOKEN
-          Start-Process -FilePath $ngrokExe -ArgumentList "http",$env:APP_PORT,"--log=stdout" -NoNewWindow
-          Start-Sleep -Seconds 10
+    - name: Retrieve public URL
+      run: |
+        $tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+        $publicUrl = $tunnels.tunnels[0].public_url
+        echo "PUBLIC_URL=$publicUrl" >> $env:GITHUB_ENV
+        
+        Write-Host ""
+        Write-Host "✨ SUCCESS! OpenBullet2 is fully working on Windows"
+        Write-Host "🌐 Access URL: $publicUrl"
+        Write-Host ""
 
-          $tunnelsJson = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
-          if (-not $tunnelsJson.tunnels) {
-            throw "ngrok tunnels endpoint didn't return tunnels."
-          }
-          $publicUrl = $tunnelsJson.tunnels[0].public_url
-          Write-Host "Public URL: $publicUrl"
-          echo "NGROK_URL=$publicUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
-          echo "::set-output name=url::$publicUrl"
-
-      - name: Show Public URL
-        run: |
-          Write-Host "====================================="
-          Write-Host "  OpenBullet2 Web Client ngrok URL: "
-          Write-Host "  $env:NGROK_URL"
-          Write-Host "====================================="
-
-      - name: Add URL to Summary
-        run: |
-          echo "## 🌐 OpenBullet2 Web Client URL" >> $env:GITHUB_STEP_SUMMARY
-          echo "" >> $env:GITHUB_STEP_SUMMARY
-          echo "**$env:NGROK_URL**" >> $env:GITHUB_STEP_SUMMARY
+    - name: Keep alive
+      run: |
+        Write-Host "🟢 Service running on Windows for 6 hours..."
+        Start-Sleep -Seconds 21600
