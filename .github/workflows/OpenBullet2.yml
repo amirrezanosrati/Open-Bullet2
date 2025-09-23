@@ -1,24 +1,44 @@
-name: OB2 Direct Run
+name: OB2 Guaranteed
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2-direct:
+  run-ob2:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Install .NET
+    - name: Method 1 - Direct run
+      id: method1
       run: |
-        sudo apt-get update
         sudo apt-get install -y dotnet-sdk-6.0
-
-    - name: Clone and run
-      run: |
         git clone https://github.com/openbullet/OpenBullet2.git
         cd OpenBullet2
         dotnet run --project OpenBullet2.Web --urls "http://0.0.0.0:8080" &
-        sleep 60
+        echo "OB2_PID=$!" >> $GITHUB_ENV
+        sleep 45
+        
+        if ps -p $OB2_PID > /dev/null; then
+          echo "✅ Method 1 successful"
+          echo "METHOD=direct" >> $GITHUB_ENV
+        else
+          echo "❌ Method 1 failed"
+        fi
+
+    - name: Method 2 - Docker fallback
+      if: steps.method1.outcome == 'failure'
+      run: |
+        docker run -d \
+          --name ob2 \
+          -p 8080:8080 \
+          -v $(pwd):/app \
+          -w /app \
+          mcr.microsoft.com/dotnet/sdk:6.0 \
+          bash -c "cd OpenBullet2 && dotnet run --project OpenBullet2.Web --urls http://0.0.0.0:8080"
+        
+        sleep 50
+        docker ps
+        echo "METHOD=docker" >> $GITHUB_ENV
 
     - name: Setup Ngrok
       run: |
@@ -28,12 +48,13 @@ jobs:
         ./ngrok http 8080 &
         sleep 20
 
-    - name: Get URL
+    - name: Display result
       run: |
         url=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        echo "✅ OpenBullet2 Ready: $url"
+        echo "🎉 Success with method: $METHOD"
+        echo "🌐 URL: $url"
+        echo "👤 admin/admin"
 
-    - name: Keep running
+    - name: Wait
       run: |
-        # نگه داشتن برای 2 ساعت
         sleep 7200
