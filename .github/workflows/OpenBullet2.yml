@@ -1,4 +1,4 @@
-name: Build and Expose OpenBullet2 (ngrok)
+name: Build & Expose OpenBullet2 Web Client via ngrok
 
 on:
   workflow_dispatch:
@@ -7,12 +7,14 @@ on:
       - main
 
 jobs:
-  build-and-expose:
-    runs-on: ubuntu-latest
+  web-client-ngrok:
+    runs-on: windows-latest
 
     env:
-      DOTNET_VERSION: '8.0' # قابل تغییر به 7.0 یا 6.0
       APP_PORT: '5000'
+      NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+      # نسخه دقیق OpenBullet2 که می‌خوای دانلود کنی:
+      OB2_VERSION: '0.3.2'  # یا هر نسخه‌ای که آماده است
 
     steps:
       - name: Checkout repository
@@ -22,124 +24,65 @@ jobs:
           fetch-depth: 0
           lfs: true
 
-      - name: Show repo files (debug)
+      - name: Download OpenBullet2 Web Client (Release asset)
         run: |
-          echo "Root listing:"
-          ls -la
-          echo "--- Find .sln & .csproj (maxdepth 4) ---"
-          find . -maxdepth 4 -type f \( -name '*.sln' -o -name '*.csproj' \) -print || true
+          Write-Host "Fetching OpenBullet2 version $env:OB2_VERSION"
+          $assetName = "OpenBullet2.Web.zip"
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/openbullet/OpenBullet2/releases/tags/v$($env:OB2_VERSION)" -Headers @{ 'User-Agent' = 'GitHub-Actions' }
+          $asset = $release.assets | Where-Object { $_.name -eq $assetName }
+          if (-not $asset) {
+            throw "Asset $assetName not found in release v$($env:OB2_VERSION)"
+          }
+          $downloadUrl = $asset.browser_download_url
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $assetName
+          Expand-Archive -Path $assetName -DestinationPath "./OpenBullet2Web"
 
-      - name: Locate solution or project file
-        id: locate
+      - name: Ensure .NET Runtime & ASP.NET Core Runtime installed
         run: |
-          echo "Searching for .sln (maxdepth 3)..."
-          SOLUTION_FILE=$(find . -maxdepth 3 -type f -name '*.sln' | head -n 1 || true)
-          if [ -n "$SOLUTION_FILE" ]; then
-            echo "Found solution: $SOLUTION_FILE"
-            echo "SOLUTION_FILE=$SOLUTION_FILE" >> $GITHUB_ENV
-          else
-            echo "No .sln found, searching for a csproj (maxdepth 4)..."
-            PROJECT_FILE=$(find . -maxdepth 4 -type f -name '*.csproj' | head -n 1 || true)
-            if [ -n "$PROJECT_FILE" ]; then
-              echo "Found project: $PROJECT_FILE"
-              echo "PROJECT_FILE=$PROJECT_FILE" >> $GITHUB_ENV
-            else
-              echo "ERROR: No .sln or .csproj file found in the repository."
-              exit 1
-            fi
-          fi
+          # فرض می گیریم که روی runner ویندوز-latest هست
+          # نصب دات‌نت، اگر نیاز باشد — معمولاً روی ویندوز-latest نسخه های پایه وجود دارد
+          # اگر نیاز باشه، می‌تونی نصب دستی اضافه کنی
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet --list-runtimes
+          dotnet --list-sdks
 
-      - name: Restore
+      - name: Download ngrok for Windows
         run: |
-          if [ -n "$SOLUTION_FILE" ]; then
-            dotnet restore "$SOLUTION_FILE" --verbosity minimal
-          else
-            dotnet restore "$PROJECT_FILE" --verbosity minimal
-          fi
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip" -OutFile "ngrok.zip"
+          Expand-Archive -Path "ngrok.zip" -DestinationPath "./ngrok"
+          # مسیر بنر ی باینری
+          $ngrokExe = "./ngrok/ngrok.exe"
 
-      - name: Build
+      - name: Run OpenBullet2 Web Client (background)
+        working-directory: "./OpenBullet2Web"
         run: |
-          if [ -n "$SOLUTION_FILE" ]; then
-            dotnet build "$SOLUTION_FILE" --configuration Release --no-restore
-          else
-            dotnet build "$PROJECT_FILE" --configuration Release --no-restore
-          fi
-
-      - name: Download ngrok
-        run: |
-          NGROK_ZIP="ngrok.zip"
-          curl -sSLo $NGROK_ZIP "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
-          unzip -q $NGROK_ZIP -d ./ngrok
-          chmod +x ./ngrok/ngrok
-          ./ngrok/ngrok version
-
-      - name: Determine runnable project
-        id: chooseproj
-        run: |
-          if [ -n "$PROJECT_FILE" ]; then
-            echo "RUN_PROJECT=$PROJECT_FILE" >> $GITHUB_ENV
-          elif [ -n "$SOLUTION_FILE" ]; then
-            CANDIDATE=$(find "$(dirname "$SOLUTION_FILE")" -maxdepth 4 -type f -name '*.csproj' | head -n 1 || true)
-            if [ -n "$CANDIDATE" ]; then
-              echo "RUN_PROJECT=$CANDIDATE" >> $GITHUB_ENV
-            else
-              echo "ERROR: Could not determine a project to run."
-              exit 1
-            fi
-          fi
-
-      - name: Run OpenBullet2 (background)
-        env:
-          ASPNETCORE_URLS: "http://0.0.0.0:${{ env.APP_PORT }}"
-          DOTNET_ENVIRONMENT: Development
-        run: |
-          echo "Running project: $RUN_PROJECT"
-          dotnet run --project "$RUN_PROJECT" --configuration Release --no-build --urls "http://0.0.0.0:${{ env.APP_PORT }}" &
-          sleep 6
+          Write-Host "Starting OpenBullet2.Web..."
+          Start-Process -FilePath ".\\OpenBullet2.Web.exe" -ArgumentList "--urls","http://0.0.0.0:$env:APP_PORT" -NoNewWindow
+          # صبر کوتاه برای بالا آمدن سرور
+          Start-Sleep -Seconds 10
 
       - name: Start ngrok and fetch public URL
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_TOKEN }}
-          APP_PORT: ${{ env.APP_PORT }}
         run: |
-          if [ -z "$NGROK_AUTHTOKEN" ]; then
-            echo "ERROR: Please set the NGROK_TOKEN secret in this repository."
-            exit 1
-          fi
+          if (-not $env:NGROK_TOKEN) {
+            throw "NGROK_TOKEN secret not set."
+          }
+          $ngrokExe = "../ngrok/ngrok.exe"
+          # authtoken تنظیم میشه
+          & $ngrokExe authtoken $env:NGROK_TOKEN
+          Start-Process -FilePath $ngrokExe -ArgumentList "http",$env:APP_PORT,"--log=stdout" -NoNewWindow
+          # صبر برای آماده شدن تونل
+          Start-Sleep -Seconds 10
 
-          ./ngrok/ngrok authtoken "$NGROK_AUTHTOKEN" || true
-          ./ngrok/ngrok http $APP_PORT --log=stdout > ngrok.log 2>&1 &
+          # گرفتن URL عمومی
+          $tunnelsJson = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
+          if (-not $tunnelsJson.tunnels) {
+            throw "ngrok tunnels endpoint didn't return tunnels."
+          }
+          $publicUrl = $tunnelsJson.tunnels[0].public_url
+          Write-Host "Public URL: $publicUrl"
+          # ذخیره در خروجی اکشن
+          echo "NGROK_URL=$publicUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
 
-          for i in {1..20}; do
-            if curl -s "http://127.0.0.1:4040/api/tunnels" | grep -q "public_url"; then
-              break
-            fi
-            sleep 1
-          done
-
-          NGROK_URL=$(curl -s "http://127.0.0.1:4040/api/tunnels" | \
-            python3 -c "import sys, json; data=json.load(sys.stdin); print(data['tunnels'][0]['public_url'] if data.get('tunnels') else '')")
-
-          if [ -z "$NGROK_URL" ]; then
-            echo "Failed to get ngrok URL. See ngrok.log for details."
-            tail -n +1 ngrok.log
-            exit 1
-          fi
-
-          echo "NGROK_URL=$NGROK_URL" >> $GITHUB_OUTPUT
-          echo "NGROK_URL=$NGROK_URL" >> $GITHUB_ENV
-
-      - name: Show ngrok log tail
-        if: always()
+      - name: Summary
         run: |
-          tail -n 200 ngrok.log || true
-
-      - name: Post a summary
-        if: always()
-        run: |
-          echo "OpenBullet2 should now be reachable via: $NGROK_URL"
+          Write-Host "OpenBullet2 Web Client is available at: $($env:NGROK_URL)"
