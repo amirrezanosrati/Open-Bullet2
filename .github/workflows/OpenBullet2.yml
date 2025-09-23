@@ -1,45 +1,36 @@
-name: OpenBullet2 Guaranteed Working
+name: OB2 Super Simple
 
 on:
   workflow_dispatch
 
 jobs:
-  deploy-ob2:
+  run-ob2:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     steps:
-    - name: Download OpenBullet2 Release
+    - name: Download and Run
       run: |
-        # دانلود مستقیم از ریلیزهای گیتهاب
-        $releaseUrl = "https://github.com/openbullet/OpenBullet2/releases/latest/download/OpenBullet2.zip"
-        Invoke-WebRequest -Uri $releaseUrl -OutFile "OpenBullet2.zip"
-        Expand-Archive -Path "OpenBullet2.zip" -DestinationPath "OpenBullet2" -Force
-        cd OpenBullet2
-        dir
-
-    - name: Run OpenBullet2
-      run: |
-        cd OpenBullet2
-        Start-Process -FilePath "OpenBullet2.exe" -ArgumentList "--urls", "http://0.0.0.0:8080"
-        Start-Sleep -Seconds 30
+        # دانلود اکسپلورر از ریلیز
+        iwr https://github.com/openbullet/OpenBullet2/releases/latest/download/OpenBullet2.Explorer.zip -outfile ob2.zip
+        Expand-Archive ob2.zip -Force
+        cd OpenBullet2.Explorer
+        .\OpenBullet2.Explorer.exe &
+        sleep 30
 
     - name: Setup Ngrok
       run: |
-        Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
-        Expand-Archive -Path "ngrok.zip" -DestinationPath "." -Force
+        iwr https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -outfile ngrok.zip
+        Expand-Archive ngrok.zip -Force
         .\ngrok.exe authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        Start-Process -FilePath ".\ngrok.exe" -ArgumentList "http", "8080"
-        Start-Sleep -Seconds 20
+        .\ngrok.exe http 8080 &
+        sleep 20
 
-    - name: Get URL
+    - name: Show Info
       run: |
-        Start-Sleep -Seconds 10
-        $url = (Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels").tunnels[0].public_url
-        echo "URL: $url"
-        echo "Username: admin"
-        echo "Password: admin"
+        $url = (irm http://localhost:4040/api/tunnels).tunnels[0].public_url
+        write-host "OpenBullet2 Ready: $url"
 
-    - name: Wait
+    - name: Keep alive
       run: |
-        Start-Sleep -Seconds 1800
+        sleep 3600
