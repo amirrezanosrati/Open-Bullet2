@@ -7,8 +7,7 @@ jobs:
   build:
     runs-on: windows-latest
     env:
-      OB2_VERSION: "0.3.2"        # ورژن OpenBullet2
-      APP_PORT: "50001"           # پورت 5 رقمی سفارشی
+      APP_PORT: "50001"   # پورت 5 رقمی سفارشی
 
     steps:
       - name: Checkout repository
@@ -20,18 +19,23 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      # دانلود OpenBullet2
-      - name: Download OpenBullet2
+      # گرفتن آخرین Release و Asset ویندوز
+      - name: Fetch latest OpenBullet2 release
+        id: get_release
+        shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/openbullet/OpenBullet2/releases/download/$env:OB2_VERSION/OpenBullet2.zip" -OutFile "ob2.zip"
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/openbullet/OpenBullet2/releases/latest"
+          $asset = $release.assets | Where-Object { $_.name -match "win.*x64.*\.zip" }
+          if (-not $asset) { throw "❌ No Windows asset found in latest release." }
+          Write-Host "Downloading $($asset.name)..."
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "ob2.zip"
           Expand-Archive ob2.zip -DestinationPath ob2
-          dir ob2
+          echo "ASSET_NAME=$($asset.name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
 
       # اجرای OpenBullet2 روی پورت دلخواه
       - name: Run OpenBullet2
         run: |
           cd ob2/OpenBullet2Web
-          # اجرای برنامه روی پورت سفارشی
           $env:ASPNETCORE_URLS="http://*:$env:APP_PORT"
           dotnet OpenBullet2Web.dll &
           Start-Sleep -Seconds 20
@@ -45,6 +49,7 @@ jobs:
 
       # راه‌اندازی تونل ngrok روی پورت سفارشی
       - name: Start ngrok tunnel
+        id: ngrok
         run: |
           .\ngrok.exe authtoken $env:NGROK_TOKEN
           Start-Process -FilePath .\ngrok.exe -ArgumentList "http",$env:APP_PORT,"--log=stdout" -NoNewWindow
@@ -67,4 +72,5 @@ jobs:
           Write-Host "===================================="
           Write-Host " OpenBullet2 Web Client is running! "
           Write-Host " Public URL: $env:NGROK_URL "
+          Write-Host " Release Asset: $env:ASSET_NAME "
           Write-Host "===================================="
