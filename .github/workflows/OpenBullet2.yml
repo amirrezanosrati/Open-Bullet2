@@ -1,76 +1,70 @@
-name: OpenBullet2 Windows Complete
+name: OpenBullet2 with Ngrok
 
 on:
-  workflow_dispatch
+  workflow_dispatch:
 
 jobs:
-  deploy-ob2-windows:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 360
+    env:
+      OB2_VERSION: "0.3.2"        # ورژن OpenBullet2
+      APP_PORT: "50001"           # پورت 5 رقمی سفارشی
 
     steps:
-    - name: Checkout and build
-      run: |
-        git clone https://github.com/openbullet/OpenBullet2.git
-        cd OpenBullet2
-        
-        # build کامل
-        dotnet restore
-        dotnet build -c Release
-        dotnet publish -c Release -o ./publish
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Verify build output
-      run: |
-        cd OpenBullet2/publish
-        echo "=== Published Files ==="
-        dir
-        echo "=== wwwroot Contents ==="
-        if (Test-Path wwwroot) {
-            dir wwwroot
-            echo "✅ Static files are present"
-        } else {
-            echo "❌ wwwroot missing - this was the Linux issue!"
-        }
+      # نصب .NET
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 8.0.x
 
-    - name: Start OpenBullet2
-      run: |
-        cd OpenBullet2/publish
-        $process = Start-Process -PassThru -FilePath "dotnet" -ArgumentList "OpenBullet2.Web.dll", "--urls", "http://0.0.0.0:8080"
-        echo "PROCESS_ID=$process.Id" >> $env:GITHUB_ENV
-        Start-Sleep -Seconds 40
+      # دانلود OpenBullet2
+      - name: Download OpenBullet2
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/openbullet/OpenBullet2/releases/download/$env:OB2_VERSION/OpenBullet2.zip" -OutFile "ob2.zip"
+          Expand-Archive ob2.zip -DestinationPath ob2
+          dir ob2
 
-    - name: Verify application
-      run: |
-        # تست اتصال به برنامه
-        try {
-            $response = Invoke-WebRequest -Uri "http://localhost:8080" -TimeoutSec 10
-            echo "✅ OpenBullet2 is fully functional!"
-            echo "✅ Static files are serving correctly"
-        } catch {
-            echo "❌ Application error: $($_.Exception.Message)"
-            exit 1
-        }
+      # اجرای OpenBullet2 روی پورت دلخواه
+      - name: Run OpenBullet2
+        run: |
+          cd ob2/OpenBullet2Web
+          # اجرای برنامه روی پورت سفارشی
+          $env:ASPNETCORE_URLS="http://*:$env:APP_PORT"
+          dotnet OpenBullet2Web.dll &
+          Start-Sleep -Seconds 20
 
-    - name: Setup Ngrok tunnel
-      run: |
-        Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
-        Expand-Archive -Path "ngrok.zip" -DestinationPath "."
-        .\ngrok.exe authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        Start-Process -FilePath ".\ngrok.exe" -ArgumentList "http", "8080"
-        Start-Sleep -Seconds 30
+      # دانلود ngrok نسخه جدید
+      - name: Download latest ngrok
+        run: |
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
+          Expand-Archive ngrok.zip -DestinationPath .
+          dir .
 
-    - name: Retrieve public URL
-      run: |
-        $tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
-        $publicUrl = $tunnels.tunnels[0].public_url
-        echo "PUBLIC_URL=$publicUrl" >> $env:GITHUB_ENV
-        
-        Write-Host ""
-        Write-Host "✨ SUCCESS! OpenBullet2 is fully working on Windows"
-        Write-Host "🌐 Access URL: $publicUrl"
-        Write-Host ""
+      # راه‌اندازی تونل ngrok روی پورت سفارشی
+      - name: Start ngrok tunnel
+        run: |
+          .\ngrok.exe authtoken $env:NGROK_TOKEN
+          Start-Process -FilePath .\ngrok.exe -ArgumentList "http",$env:APP_PORT,"--log=stdout" -NoNewWindow
+          Start-Sleep -Seconds 10
 
-    - name: Keep alive
-      run: |
-        Write-Host "🟢 Service running on Windows for 6 hours..."
-        Start-Sleep -Seconds 21600
+          $tunnelsJson = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
+          $publicUrl = $tunnelsJson.tunnels[0].public_url
+          Write-Host "Public URL: $publicUrl"
+          echo "NGROK_URL=$publicUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          echo "::set-output name=url::$publicUrl"
+
+      # تست اتصال به OpenBullet2
+      - name: Test OB2 connection
+        run: |
+          Invoke-RestMethod -Uri "http://localhost:$env:APP_PORT" -UseBasicParsing
+
+      # نمایش آدرس خروجی
+      - name: Show access URL
+        run: |
+          Write-Host "===================================="
+          Write-Host " OpenBullet2 Web Client is running! "
+          Write-Host " Public URL: $env:NGROK_URL "
+          Write-Host "===================================="
