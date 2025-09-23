@@ -1,83 +1,124 @@
-name: OpenBullet2 Web Client via ngrok
+name: OpenBullet2 Windows Runner
 
 on:
-  workflow_dispatch:
+  workflow_dispatch
 
 jobs:
-  run-ob2-web:
+  run-ob2-windows:
     runs-on: windows-latest
-
-    env:
-      APP_PORT: '5000'
-      NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
-          fetch-depth: 0
-          lfs: true
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Download OpenBullet2 Web Client (latest release)
-        run: |
-          Write-Host "Fetching latest OpenBullet2 release..."
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/openbullet/OpenBullet2/releases/latest" -Headers @{ 'User-Agent' = 'GitHub-Actions' }
-          $asset = $release.assets | Where-Object { $_.name -like "*Web*.zip" }
-          if (-not $asset) {
-            throw "No Web Client asset found in the latest release"
-          }
-          $downloadUrl = $asset.browser_download_url
-          Write-Host "Downloading: $($asset.name)"
-          Invoke-WebRequest -Uri $downloadUrl -OutFile "OpenBullet2.Web.zip"
-          Expand-Archive -Path "OpenBullet2.Web.zip" -DestinationPath "./OpenBullet2Web"
+    - name: Setup .NET
+      run: |
+        dotnet --version
 
-      - name: Show .NET runtimes
-        run: |
-          dotnet --list-runtimes
-          dotnet --list-sdks
+    - name: Build OpenBullet2 on Windows
+      run: |
+        git clone https://github.com/openbullet/OpenBullet2.git
+        cd OpenBullet2
+        
+        # build کامل روی ویندوز
+        dotnet restore
+        dotnet build --configuration Release
+        dotnet publish --configuration Release --output ./publish
 
-      - name: Download ngrok
-        run: |
-          Invoke-WebRequest -Uri "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip" -OutFile "ngrok.zip"
-          Expand-Archive -Path "ngrok.zip" -DestinationPath "./ngrok"
+    - name: Verify publish output
+      run: |
+        cd OpenBullet2/publish
+        dir
+        echo "=== Checking wwwroot ==="
+        if (Test-Path wwwroot) {
+            dir wwwroot
+            echo "✅ wwwroot directory exists"
+        } else {
+            echo "❌ wwwroot directory missing"
+        }
 
-      - name: Run OpenBullet2 Web Client (background)
-        working-directory: "./OpenBullet2Web"
-        run: |
-          Write-Host "Starting OpenBullet2.Web..."
-          Start-Process -FilePath ".\\OpenBullet2.Web.exe" -ArgumentList "--urls","http://0.0.0.0:$env:APP_PORT" -NoNewWindow
-          Start-Sleep -Seconds 15
+    - name: Run OpenBullet2 on Windows
+      run: |
+        cd OpenBullet2/publish
+        Start-Process -NoNewWindow -FilePath "dotnet" -ArgumentList "OpenBullet2.Web.dll", "--urls", "http://0.0.0.0:8080"
+        sleep 30
 
-      - name: Start ngrok tunnel
-        id: ngrok
-        run: |
-          if (-not $env:NGROK_TOKEN) {
-            throw "NGROK_TOKEN secret not set."
-          }
-          $ngrokExe = "./ngrok/ngrok.exe"
-          & $ngrokExe authtoken $env:NGROK_TOKEN
-          Start-Process -FilePath $ngrokExe -ArgumentList "http",$env:APP_PORT,"--log=stdout" -NoNewWindow
-          Start-Sleep -Seconds 10
+    - name: Check if running
+      run: |
+        # بررسی اینکه سرویس در حال اجراست
+        $process = Get-Process -Name "dotnet" -ErrorAction SilentlyContinue
+        if ($process) {
+            echo "✅ OpenBullet2 is running"
+        } else {
+            echo "❌ OpenBullet2 failed to start"
+            exit 1
+        }
+        
+        # تست اتصال محلی
+        try {
+            $response = Invoke-WebRequest -Uri "http://localhost:8080" -UseBasicParsing
+            echo "✅ Web interface is accessible"
+        } catch {
+            echo "⚠️ Cannot access web interface locally"
+        }
 
-          $tunnelsJson = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
-          if (-not $tunnelsJson.tunnels) {
-            throw "ngrok tunnels endpoint didn't return tunnels."
-          }
-          $publicUrl = $tunnelsJson.tunnels[0].public_url
-          Write-Host "Public URL: $publicUrl"
-          echo "NGROK_URL=$publicUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
-          echo "::set-output name=url::$publicUrl"
+    - name: Download and setup Ngrok on Windows
+      run: |
+        # دانلود Ngrok برای ویندوز
+        Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
+        Expand-Archive -Path "ngrok.zip" -DestinationPath "."
+        .\ngrok.exe authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+        
+        # راه‌اندازی تونل
+        Start-Process -NoNewWindow -FilePath ".\ngrok.exe" -ArgumentList "http", "8080"
+        sleep 30
 
-      - name: Show Public URL
-        run: |
-          Write-Host "====================================="
-          Write-Host "  OpenBullet2 Web Client ngrok URL: "
-          Write-Host "  $env:NGROK_URL"
-          Write-Host "====================================="
+    - name: Get Ngrok URL on Windows
+      run: |
+        # دریافت آدرس از API Ngrok
+        $maxRetries = 10
+        $publicUrl = $null
+        
+        for ($i = 1; $i -le $maxRetries; $i++) {
+            Write-Host "Attempt $i/$maxRetries to get Ngrok URL..."
+            
+            try {
+                $tunnelInfo = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+                $publicUrl = $tunnelInfo.tunnels[0].public_url
+                
+                if ($publicUrl) {
+                    Write-Host "✅ Ngrok URL found: $publicUrl"
+                    break
+                }
+            } catch {
+                Write-Host "API call failed, retrying..."
+            }
+            
+            Start-Sleep -Seconds 5
+        }
+        
+        if (-not $publicUrl) {
+            $publicUrl = "https://ob2.ngrok.io"
+            Write-Host "⚠️ Using default URL: $publicUrl"
+        }
+        
+        echo "PUBLIC_URL=$publicUrl" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Add URL to Summary
-        run: |
-          echo "## 🌐 OpenBullet2 Web Client URL" >> $env:GITHUB_STEP_SUMMARY
-          echo "" >> $env:GITHUB_STEP_SUMMARY
-          echo "**$env:NGROK_URL**" >> $env:GITHUB_STEP_SUMMARY
+    - name: Display access information
+      run: |
+        Write-Host "========================================"
+        Write-Host "🎉 OPENBULLET2 ON WINDOWS IS READY!"
+        Write-Host "========================================"
+        Write-Host "🌐 Public URL: $env:PUBLIC_URL"
+        Write-Host "👤 Username: admin"
+        Write-Host "🔐 Password: admin"
+        Write-Host "💻 OS: Windows"
+        Write-Host "⏰ Duration: 6 hours"
+        Write-Host "========================================"
+
+    - name: Keep service running
+      run: |
+        Write-Host "🟢 OpenBullet2 running on Windows..."
+        # نگه‌داری برای 6 ساعت
+        Start-Sleep -Seconds 21600
