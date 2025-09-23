@@ -1,59 +1,45 @@
-name: OB2 Guaranteed
+name: OB2 with Alternative Ngrok
 
 on:
   workflow_dispatch
 
 jobs:
-  run-ob2:
+  run-ob2-ngrok-alt:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Method 1 - Direct run
-      id: method1
+    - name: Run OB2
       run: |
         sudo apt-get install -y dotnet-sdk-6.0
         git clone https://github.com/openbullet/OpenBullet2.git
         cd OpenBullet2
         dotnet run --project OpenBullet2.Web --urls "http://0.0.0.0:8080" &
-        echo "OB2_PID=$!" >> $GITHUB_ENV
-        sleep 45
-        
-        if ps -p $OB2_PID > /dev/null; then
-          echo "✅ Method 1 successful"
-          echo "METHOD=direct" >> $GITHUB_ENV
-        else
-          echo "❌ Method 1 failed"
-        fi
+        sleep 60
 
-    - name: Method 2 - Docker fallback
-      if: steps.method1.outcome == 'failure'
-      run: |
-        docker run -d \
-          --name ob2 \
-          -p 8080:8080 \
-          -v $(pwd):/app \
-          -w /app \
-          mcr.microsoft.com/dotnet/sdk:6.0 \
-          bash -c "cd OpenBullet2 && dotnet run --project OpenBullet2.Web --urls http://0.0.0.0:8080"
-        
-        sleep 50
-        docker ps
-        echo "METHOD=docker" >> $GITHUB_ENV
-
-    - name: Setup Ngrok
+    - name: Try different Ngrok regions
       run: |
         wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
         tar -xzf ngrok-v3-stable-linux-amd64.tgz
-        ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        ./ngrok http 8080 &
-        sleep 20
-
-    - name: Display result
-      run: |
-        url=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
-        echo "🎉 Success with method: $METHOD"
-        echo "🌐 URL: $url"
-        echo "👤 admin/admin"
+        
+        # تست region‌های مختلف
+        regions=("us" "eu" "ap" "au" "sa" "jp" "in")
+        
+        for region in "${regions[@]}"; do
+          echo "Trying region: $region"
+          ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+          ./ngrok http 8080 --region $region > ngrok_$region.log 2>&1 &
+          sleep 20
+          
+          if curl -s http://localhost:4040/api/tunnels > /dev/null; then
+            url=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -1)
+            echo "✅ Success with region: $region"
+            echo "🌐 URL: $url"
+            break
+          else
+            echo "❌ Failed with region: $region"
+            pkill ngrok
+          fi
+        done
 
     - name: Wait
       run: |
