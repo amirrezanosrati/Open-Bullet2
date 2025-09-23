@@ -1,173 +1,107 @@
-name: OpenBullet2 with Ngrok URL
+name: Build and Expose OpenBullet2 (ngrok)
 
 on:
-  workflow_dispatch
+  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
-  build-ob2-web:
+  build-and-expose:
     runs-on: ubuntu-latest
 
+    env:
+      # می‌توانید نسخه دات‌نت را اینجا تغییر دهید
+      DOTNET_VERSION: '8.0'
+      APP_PORT: '5000' # پورتی که برنامه به آن گوش می‌دهد
+      # اگر محل فایل سلوشن/پروجکت شما متفاوت است، مسیر زیر را تغییر دهید
+      SOLUTION_PATH: '.'
+
     steps:
-    - name: Install .NET 6.0
-      run: |
-        wget https://dot.net/v1/dotnet-install.sh
-        chmod +x dotnet-install.sh
-        ./dotnet-install.sh --runtime dotnet --version 6.0.0
-        export PATH="$PATH:/root/.dotnet"
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Clone and build only web project
-      run: |
-        git clone https://github.com/openbullet/OpenBullet2.git
-        cd OpenBullet2
-        
-        if [ -f "OpenBullet2.Web/OpenBullet2.Web.csproj" ]; then
-          dotnet restore OpenBullet2.Web/OpenBullet2.Web.csproj
-          dotnet build OpenBullet2.Web/OpenBullet2.Web.csproj --configuration Release
-          dotnet publish OpenBullet2.Web/OpenBullet2.Web.csproj --configuration Release --output ./publish
-        else
-          echo "❌ Web project not found"
-          exit 1
-        fi
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-    - name: Run web application
-      run: |
-        cd OpenBullet2/publish
-        dotnet OpenBullet2.Web.dll --urls "http://0.0.0.0:8080" > web.log 2>&1 &
-        echo "WEB_PID=$!" >> $GITHUB_ENV
-        sleep 30
+      - name: Restore and build
+        working-directory: ${{ env.SOLUTION_PATH }}
+        run: |
+          dotnet restore --verbosity minimal
+          dotnet build --configuration Release --no-restore
 
-    - name: Verify web app is running
-      run: |
-        if ps -p $WEB_PID > /dev/null; then
-          echo "✅ Web application is running"
-          # تست اتصال به پورت 8080
-          if curl -s http://localhost:8080 > /dev/null; then
-            echo "✅ Web interface is accessible locally"
-          else
-            echo "⚠️ Cannot access web interface locally"
-          fi
-        else
-          echo "❌ Web application failed to start"
-          cat OpenBullet2/publish/web.log
-          exit 1
-        fi
+      - name: Download ngrok
+        run: |
+          # این اسکریپت نسخه لینوکس amd64 را دانلود می‌کند. در صورت نیاز معماری را عوض کنید.
+          NGROK_ZIP="ngrok.zip"
+          curl -sSLo $NGROK_ZIP "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
+          unzip -q $NGROK_ZIP -d ./ngrok
+          chmod +x ./ngrok/ngrok
+          ./ngrok/ngrok version
 
-    - name: Setup Ngrok properly
-      run: |
-        # دانلود Ngrok
-        wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-        tar -xzf ngrok-v3-stable-linux-amd64.tgz
-        chmod +x ngrok
-        
-        # تنظیم توکن
-        ./ngrok authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-        
-        # راه‌اندازی تونل با لاگ کامل
-        ./ngrok http 8080 --log=stdout > ngrok_output.log 2>&1 &
-        echo "NGROK_PID=$!" >> $GITHUB_ENV
-        sleep 25  # زمان بیشتر برای راه‌اندازی Ngrok
+      - name: Run OpenBullet2 (background)
+        working-directory: ${{ env.SOLUTION_PATH }}
+        env:
+          ASPNETCORE_URLS: "http://0.0.0.0:${{ env.APP_PORT }}"
+          DOTNET_ENVIRONMENT: Development
+        run: |
+          # اجرا به صورت پس‌زمینه تا بتوانیم ngrok را بالا بیاوریم
+          dotnet run --configuration Release --no-build --urls "http://0.0.0.0:${{ env.APP_PORT }}" &
+          echo "dotnet started"
+          # کمی صبر تا اپ آماده شود
+          sleep 6
 
-    - name: Get Ngrok URL correctly
-      run: |
-        echo "🔍 Retrieving Ngrok URL..."
-        
-        # روش 1: استفاده از API Ngrok
-        max_retries=10
-        for i in $(seq 1 $max_retries); do
-          echo "Attempt $i/$max_retries to get Ngrok URL..."
-          TUNNEL_INFO=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null || echo "{}")
-          PUBLIC_URL=$(echo "$TUNNEL_INFO" | grep -o '"public_url":"[^"]*"' | head -1 | cut -d'"' -f4)
-          
-          if [ -n "$PUBLIC_URL" ]; then
-            echo "✅ Ngrok URL found via API: $PUBLIC_URL"
-            break
-          fi
-          
-          # روش 2: استفاده از log Ngrok
-          if [ -f ngrok_output.log ]; then
-            PUBLIC_URL=$(grep -o 'url=https://[^ ]*' ngrok_output.log | cut -d= -f2 | head -1)
-            if [ -n "$PUBLIC_URL" ]; then
-              echo "✅ Ngrok URL found via log: $PUBLIC_URL"
-              break
-            fi
-          fi
-          
-          sleep 5
-        done
-        
-        if [ -z "$PUBLIC_URL" ]; then
-          # روش 3: بررسی process Ngrok
-          if ps -p $NGROK_PID > /dev/null; then
-            echo "⚠️ Ngrok is running but URL not found, checking logs..."
-            cat ngrok_output.log | tail -20
-            PUBLIC_URL="https://ob2.ngrok.io"  # آدرس پیش‌فرض
-          else
-            echo "❌ Ngrok failed to start"
-            cat ngrok_output.log
+      - name: Start ngrok and fetch public URL
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_TOKEN }}
+          APP_PORT: ${{ env.APP_PORT }}
+        run: |
+          if [ -z "$NGROK_AUTHTOKEN" ]; then
+            echo "ERROR: Please set the NGROK_TOKEN secret in this repository."
             exit 1
           fi
-        fi
-        
-        echo "🌐 Final Public URL: $PUBLIC_URL"
-        echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
 
-    - name: Display complete access information
-      run: |
-        echo "========================================"
-        echo "🎉 OPENBULLET2 IS FULLY READY!"
-        echo "========================================"
-        echo "🌐 PUBLIC ACCESS URL: $PUBLIC_URL"
-        echo "👤 Username: admin"
-        echo "🔐 Password: admin"
-        echo ""
-        echo "📋 Important Links:"
-        echo "- Main Interface: $PUBLIC_URL"
-        echo "- Configs: $PUBLIC_URL/configs"
-        echo "- Jobs: $PUBLIC_URL/jobs"
-        echo "- Proxies: $PUBLIC_URL/proxies"
-        echo ""
-        echo "⚡ Status:"
-        echo "- Web App: ✅ Running (PID: $WEB_PID)"
-        echo "- Ngrok: ✅ Running (PID: $NGROK_PID)"
-        echo "- Port: 8080"
-        echo ""
-        echo "⏰ This instance will run for 6 hours"
-        echo "========================================"
+          # آغاز тоннل و لاگ گرفتن
+          ./ngrok/ngrok authtoken "$NGROK_AUTHTOKEN" || true
+          ./ngrok/ngrok http $APP_PORT --log=stdout > ngrok.log 2>&1 &
 
-    - name: Continuous monitoring
-      run: |
-        echo "🟢 Starting continuous monitoring..."
-        counter=0
-        while [ $counter -lt 360 ]; do  # 6 hours in minutes
-          # بررسی وضعیت سرویس‌ها هر 2 دقیقه
-          if [ $((counter % 2)) -eq 0 ]; then
-            # بررسی وب اپلیکیشن
-            if ! ps -p $WEB_PID > /dev/null; then
-              echo "❌ Web app stopped, restarting..."
-              cd OpenBullet2/publish
-              dotnet OpenBullet2.Web.dll --urls "http://0.0.0.0:8080" > web.log 2>&1 &
-              echo "WEB_PID=$!" >> $GITHUB_ENV
+          # صبر برای بالا آمدن ngrok
+          for i in {1..15}; do
+            if curl -s "http://127.0.0.1:4040/api/tunnels" | grep -q "public_url"; then
+              break
             fi
-            
-            # بررسی Ngrok
-            if ! ps -p $NGROK_PID > /dev/null; then
-              echo "❌ Ngrok stopped, restarting..."
-              ./ngrok http 8080 --log=stdout > ngrok_output.log 2>&1 &
-              echo "NGROK_PID=$!" >> $GITHUB_ENV
-              sleep 10
-            fi
-            
-            echo "✅ All services healthy - $counter minutes elapsed"
+            sleep 1
+          done
+
+          # خواندن URL از API محلی ngrok
+          NGROK_URL=$(curl -s "http://127.0.0.1:4040/api/tunnels" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['tunnels'][0]['public_url'] if data.get('tunnels') else '')")
+
+          if [ -z "$NGROK_URL" ]; then
+            echo "Failed to get ngrok URL. See ngrok.log for details."
+            tail -n +1 ngrok.log
+            exit 1
           fi
-          
-          sleep 60
-          counter=$((counter + 1))
-        done
 
-    - name: Final cleanup
-      if: always()
-      run: |
-        echo "🧹 Cleaning up..."
-        pkill -f "dotnet.*OpenBullet2" || true
-        pkill -f ngrok || true
-        echo "✅ Cleanup completed"
+          echo "NGROK_URL=$NGROK_URL"
+          echo "NGROK_URL=$NGROK_URL" >> $GITHUB_OUTPUT
+          echo "NGROK_URL=$NGROK_URL" >> $GITHUB_ENV
+
+      - name: Show ngrok log tail
+        if: always()
+        run: |
+          echo "--- ngrok log (tail) ---"
+          tail -n 200 ngrok.log || true
+
+      - name: Post a summary
+        if: always()
+        run: |
+          echo "OpenBullet2 should now be reachable via: $NGROK_URL"
+
+# توضیحات:
+# - این ورکفلو هنگام push به شاخه main یا با اجرای دستی (workflow_dispatch) اجرا می‌شود.
+# - برای کارکرد ngrok باید در Settings -> Secrets یک secret به نام NGROK_TOKEN بسازید و مقدار توکن ngrok را در آن قرار دهید.
+# - در صورت نیاز مسیر SOLUTION_PATH را به پوشه‌ای که فایل .sln یا پروژه OpenBullet2 در آن قرار دارد تغییر دهید.
+# - اگر نسخه دات‌نت پروژه‌ی شما 7 یا 6 است، مقدار DOTNET_VERSION را تغییر دهید (مثلاً '7.0' یا '6.0').
+# - این یک نمونه پایه است؛ در صورت نیاز می‌توانم آن را گسترش دهم تا unit test، packaging، یا ساخت docker image نیز انجام شود.
