@@ -11,46 +11,96 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # می‌توانید نسخه دات‌نت را اینجا تغییر دهید
-      DOTNET_VERSION: '8.0'
-      APP_PORT: '5000' # پورتی که برنامه به آن گوش می‌دهد
-      # اگر محل فایل سلوشن/پروجکت شما متفاوت است، مسیر زیر را تغییر دهید
-      SOLUTION_PATH: '.'
+      DOTNET_VERSION: '8.0' # قابل تغییر به 7.0 یا 6.0
+      APP_PORT: '5000'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Locate solution or project file
+        id: locate
+        run: |
+          echo "Searching for .sln (maxdepth 3)..."
+          SOLUTION_FILE=$(find . -maxdepth 3 -type f -name '*.sln' | head -n 1 || true)
+          if [ -n "$SOLUTION_FILE" ]; then
+            echo "Found solution: $SOLUTION_FILE"
+            echo "SOLUTION_FILE=$SOLUTION_FILE" >> $GITHUB_ENV
+            echo "SOLUTION_DIR=$(dirname \"$SOLUTION_FILE\")" >> $GITHUB_ENV
+          else
+            echo "No .sln found, searching for a csproj (maxdepth 4)..."
+            PROJECT_FILE=$(find . -maxdepth 4 -type f -name '*.csproj' | head -n 1 || true)
+            if [ -n "$PROJECT_FILE" ]; then
+              echo "Found project: $PROJECT_FILE"
+              echo "PROJECT_FILE=$PROJECT_FILE" >> $GITHUB_ENV
+              echo "PROJECT_DIR=$(dirname \"$PROJECT_FILE\")" >> $GITHUB_ENV
+            else
+              echo "ERROR: No .sln or .csproj file found in the repository."
+              echo "Repository contents:" && ls -la || true
+              exit 1
+            fi
+          fi
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Restore and build
-        working-directory: ${{ env.SOLUTION_PATH }}
+      - name: Restore
         run: |
-          dotnet restore --verbosity minimal
-          dotnet build --configuration Release --no-restore
+          if [ -n "$SOLUTION_FILE" ]; then
+            echo "Restoring solution: $SOLUTION_FILE"
+            dotnet restore "$SOLUTION_FILE" --verbosity minimal
+          else
+            echo "Restoring project: $PROJECT_FILE"
+            dotnet restore "$PROJECT_FILE" --verbosity minimal
+          fi
+
+      - name: Build
+        run: |
+          if [ -n "$SOLUTION_FILE" ]; then
+            dotnet build "$SOLUTION_FILE" --configuration Release --no-restore
+          else
+            dotnet build "$PROJECT_FILE" --configuration Release --no-restore
+          fi
 
       - name: Download ngrok
         run: |
-          # این اسکریپت نسخه لینوکس amd64 را دانلود می‌کند. در صورت نیاز معماری را عوض کنید.
           NGROK_ZIP="ngrok.zip"
           curl -sSLo $NGROK_ZIP "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
           unzip -q $NGROK_ZIP -d ./ngrok
           chmod +x ./ngrok/ngrok
           ./ngrok/ngrok version
 
+      - name: Determine runnable project
+        id: chooseproj
+        run: |
+          # اگر قبلاً PROJECT_FILE پیدا شده باشد از آن استفاده کن
+          if [ -n "$PROJECT_FILE" ]; then
+            echo "Using existing PROJECT_FILE=$PROJECT_FILE"
+            echo "RUN_PROJECT=$PROJECT_FILE" >> $GITHUB_ENV
+            exit 0
+          fi
+          # اگر فقط SOLUTION_DIR موجود است، سعی کن اولین csproj را در آن پیدا کنی
+          if [ -n "$SOLUTION_DIR" ]; then
+            CANDIDATE=$(find "$SOLUTION_DIR" -maxdepth 4 -type f -name '*.csproj' | head -n 1 || true)
+            if [ -n "$CANDIDATE" ]; then
+              echo "Found candidate project under solution: $CANDIDATE"
+              echo "RUN_PROJECT=$CANDIDATE" >> $GITHUB_ENV
+              exit 0
+            fi
+          fi
+          echo "ERROR: Could not determine a project to run."
+          exit 1
+
       - name: Run OpenBullet2 (background)
-        working-directory: ${{ env.SOLUTION_PATH }}
         env:
           ASPNETCORE_URLS: "http://0.0.0.0:${{ env.APP_PORT }}"
           DOTNET_ENVIRONMENT: Development
         run: |
-          # اجرا به صورت پس‌زمینه تا بتوانیم ngrok را بالا بیاوریم
-          dotnet run --configuration Release --no-build --urls "http://0.0.0.0:${{ env.APP_PORT }}" &
+          echo "Running project: $RUN_PROJECT"
+          dotnet run --project "$RUN_PROJECT" --configuration Release --no-build --urls "http://0.0.0.0:${{ env.APP_PORT }}" &
           echo "dotnet started"
-          # کمی صبر تا اپ آماده شود
           sleep 6
 
       - name: Start ngrok and fetch public URL
@@ -63,19 +113,16 @@ jobs:
             exit 1
           fi
 
-          # آغاز тоннل و لاگ گرفتن
           ./ngrok/ngrok authtoken "$NGROK_AUTHTOKEN" || true
           ./ngrok/ngrok http $APP_PORT --log=stdout > ngrok.log 2>&1 &
 
-          # صبر برای بالا آمدن ngrok
-          for i in {1..15}; do
+          for i in {1..20}; do
             if curl -s "http://127.0.0.1:4040/api/tunnels" | grep -q "public_url"; then
               break
             fi
             sleep 1
           done
 
-          # خواندن URL از API محلی ngrok
           NGROK_URL=$(curl -s "http://127.0.0.1:4040/api/tunnels" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['tunnels'][0]['public_url'] if data.get('tunnels') else '')")
 
           if [ -z "$NGROK_URL" ]; then
@@ -84,7 +131,6 @@ jobs:
             exit 1
           fi
 
-          echo "NGROK_URL=$NGROK_URL"
           echo "NGROK_URL=$NGROK_URL" >> $GITHUB_OUTPUT
           echo "NGROK_URL=$NGROK_URL" >> $GITHUB_ENV
 
@@ -100,8 +146,6 @@ jobs:
           echo "OpenBullet2 should now be reachable via: $NGROK_URL"
 
 # توضیحات:
-# - این ورکفلو هنگام push به شاخه main یا با اجرای دستی (workflow_dispatch) اجرا می‌شود.
-# - برای کارکرد ngrok باید در Settings -> Secrets یک secret به نام NGROK_TOKEN بسازید و مقدار توکن ngrok را در آن قرار دهید.
-# - در صورت نیاز مسیر SOLUTION_PATH را به پوشه‌ای که فایل .sln یا پروژه OpenBullet2 در آن قرار دارد تغییر دهید.
-# - اگر نسخه دات‌نت پروژه‌ی شما 7 یا 6 است، مقدار DOTNET_VERSION را تغییر دهید (مثلاً '7.0' یا '6.0').
-# - این یک نمونه پایه است؛ در صورت نیاز می‌توانم آن را گسترش دهم تا unit test، packaging، یا ساخت docker image نیز انجام شود.
+# - این ورژن به‌صورت خودکار دنبال فایل .sln یا .csproj می‌گردد و از آن‌ها برای restore/build/run استفاده می‌کند.
+# - اگر پروژه‌تان در زیرپوشه‌ای خاص است، نیازی به تغییر دستی ندارید مگر بخواهید مسیر را صریح کنید.
+# - اگر می‌خواهید من مسیر ثابت (مثلاً "OpenBullet2/OpenBullet2.sln") قرار دهم، بگو تا ویرایش کنم.
